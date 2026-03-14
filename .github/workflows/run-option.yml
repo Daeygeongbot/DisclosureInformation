@@ -1,17 +1,19 @@
-name: KIND공시 - RAW데이터 및 시트 내용 채우기 (Put&Call 제외)
+name: KIND공시 - Put&Call 전용 액션
 
 on:
+  workflow_run:
+    workflows: ["KIND Pipeline - RAW + Parse"]
+    types:
+      - completed
   workflow_dispatch:
-  schedule:
-    - cron: "*/5 22,23 * * 0-4"
-    - cron: "*/5 0-12 * * 1-5"
 
 concurrency:
   group: kind-pipeline
   cancel-in-progress: false
 
 jobs:
-  run-kind-parse:
+  run-kind-option:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -19,16 +21,8 @@ jobs:
       TZ: Asia/Seoul
       GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
       GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-      HEADLESS: "true"
-      LIMIT: "30"
       DUMP_SHEET_NAME: "RAW_dump"
-      SEEN_SHEET_NAME: "seen"
-      RIGHTS_SHEET_NAME: "K_유상증자"
       BOND_SHEET_NAME: "K_주식연계채권"
-      PARSE_LOG_SHEET_NAME: "parse_log"
-      REVIEW_SHEET_NAME: "review_queue"
-      REVIEW_LOOKBACK_MINUTES: "20"
-      KEYWORDS: "유상증자결정,전환사채권발행결정,교환사채권발행결정,신주인수권부사채권발행결정"
 
     steps:
       - name: Checkout
@@ -44,12 +38,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright Chromium
-        run: |
-          python -m playwright install chromium
-
-      - name: Run RAW scraper
-        run: python main_raw.py
-
-      - name: Run parser
-        run: python main_parse.py
+      - name: Run option parser
+        run: python main_option.py
