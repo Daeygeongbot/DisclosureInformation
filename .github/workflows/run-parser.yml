@@ -1,4 +1,4 @@
-name: KIND Pipeline - RAW + Parse
+name: KIND공시 - RAW데이터 및 시트 내용 채우기 (Put&Call 제외)
 
 on:
   workflow_dispatch:
