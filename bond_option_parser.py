@@ -1,4 +1,4 @@
-#Put&Call옵션에 RAW데이터를 주식연계시트에 있는 컬럼에 넣는 코드
+# Put&Call옵션에 RAW데이터를 주식연계시트에 있는 컬럼에 넣는 코드
 import re
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -211,42 +211,36 @@ def extract_91_option_section_from_corpus(corpus: str) -> str:
 
 
 # ==========================================================
-# [9.1 예외 처리]
-# 1) 9.1이 참조 문장만 있는 경우:
-#    "조기상환청구권(Put Option), 매도청구권(Call Option)에 관한 사항,
-#     23. 기타 투자판단에 참고할 사항을 참고하시기 바랍니다."
-#    -> Put/Call 둘 다 "공시 확인 바람"
-#
-# 2) 9.1 안에 "22. 기타 투자판단에 참고할 사항"이 들어오면
-#    -> Put/Call 둘 다 "공시 확인 바람"
+# [9.1 단순 예외]
+# 5) 9.1이 "-" 면 Put/Call 둘 다 "-"
+# 6) 9.1에 22./23. 기타 투자판단... 이면 Put/Call 둘 다 "공시 확인 바람"
 # ==========================================================
-def _is_reference_only_91_section(text: str) -> bool:
+def _is_dash_91_section(text: str) -> bool:
+    s = _clean_line(text)
+    if not s:
+        return False
+
+    s = s.replace("－", "-").replace("–", "-").replace("—", "-")
+    return bool(re.fullmatch(r"-+", s))
+
+
+def _is_22_23_disclosure_reference(text: str) -> bool:
     s = _clean_line(text)
     if not s:
         return False
 
     patterns = [
-        r"^\s*조기상환청구권\s*\(\s*Put\s*Option\s*\)\s*,\s*매도청구권\s*\(\s*Call\s*Option\s*\)\s*에\s*관한\s*사항\s*,\s*23\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항(?:을)?\s*참고(?:하여)?\s*주시기\s*바랍니다\.?\s*$",
-        r"^\s*조기상환청구권\s*\(\s*Put\s*Option\s*\)\s*[,，]?\s*매도청구권\s*\(\s*Call\s*Option\s*\)\s*에\s*관한\s*사항\s*[,，]?\s*23\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항(?:을)?\s*참고(?:하여)?\s*주시기\s*바랍니다\.?\s*$",
-    ]
-    return any(re.search(p, s, flags=re.IGNORECASE) for p in patterns)
-
-
-def _contains_invalid_22_reference_in_91(text: str) -> bool:
-    s = _clean_line(text)
-    if not s:
-        return False
-
-    patterns = [
-        r"(?:^|[\s\]])22\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항",
-        r"(?:^|[\s\]])22\s*[\.\)]\s*기타투자판단에참고할사항",
+        r"(?:^|[\s\[])22\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항",
+        r"(?:^|[\s\[])23\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항",
+        r"(?:^|[\s\[])22\s*[\.\)]\s*기타투자판단에참고할사항",
+        r"(?:^|[\s\[])23\s*[\.\)]\s*기타투자판단에참고할사항",
     ]
     return any(re.search(p, s, flags=re.IGNORECASE) for p in patterns)
 
 
 # ==========================================================
 # [Call Option 헤딩 / 종료 패턴]
-# - Call은 Put Option 텍스트 안에서 잘라낸다
+# - Call은 Put Option 텍스트 안에서만 잘라낸다
 # - Call 헤딩은 삭제하지 않고 같이 가져간다
 # ==========================================================
 CALL_START_PATTERNS = [
@@ -397,7 +391,6 @@ def _to_pct_text(cell: Any, min_v: float = None, max_v: float = None) -> str:
         return ""
     if max_v is not None and val > max_v:
         return ""
-
     if float(val).is_integer():
         return f"{int(val)}%"
     return f"{val}%"
@@ -554,10 +547,12 @@ def extract_call_ratio_and_ytc_from_text(text: str) -> Tuple[str, str]:
 
 # ==========================================================
 # [최종 파서]
-# - Put Option = 9.1 전체 - Call block 제거
-# - Call Option = Put 원문 안에서 잘라낸 Call block (헤딩 포함)
-# - 단, 9.1이 참조 문장만 있거나 22.기타 투자판단...이 들어오면
-#   Put/Call 둘 다 "공시 확인 바람"
+# 1. 먼저 9.1 전체를 Put에 넣고
+# 2. 그 Put 안에서 Call을 떼서
+# 3. Call은 Call 컬럼으로 보내고
+# 4. Put에서는 Call만 제거한다
+# 5. 9.1이 - 면 Put/Call 둘 다 -
+# 6. 9.1이 22./23. 이면 공시 확인 바람
 # ==========================================================
 def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
     title = clean_title(rec.get("title", "") or "")
@@ -581,32 +576,39 @@ def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
 
     section_91 = _clean_line(section_91)
 
-    # 2) 예외 처리
-    force_disclosure_check = False
-    if section_91:
-        if _is_reference_only_91_section(section_91):
-            force_disclosure_check = True
-        elif _contains_invalid_22_reference_in_91(section_91):
-            force_disclosure_check = True
+    # 5) 9.1이 "-" 이면 Put/Call 둘 다 "-"
+    if section_91 and _is_dash_91_section(section_91):
+        row["Put Option"] = "-"
+        row["Call Option"] = "-"
+        call_text = ""
 
-    # 3) Put / Call 추출
-    if force_disclosure_check:
+    # 6) 9.1이 22./23. 이면 Put/Call 둘 다 "공시 확인 바람"
+    elif section_91 and _is_22_23_disclosure_reference(section_91):
         row["Put Option"] = "공시 확인 바람"
         row["Call Option"] = "공시 확인 바람"
         call_text = ""
+
+    # 9.1 자체를 못 찾으면 공시 확인 바람
+    elif not section_91:
+        row["Put Option"] = "공시 확인 바람"
+        row["Call Option"] = "공시 확인 바람"
+        call_text = ""
+
     else:
-        # section_91에서 Call block 추출 (헤딩 포함)
-        call_text = extract_call_option_text_from_section(section_91)
+        # 1) 먼저 9.1 전체를 Put에 넣고
+        put_text = section_91
 
-        # 9.1 안에서 못 찾으면 전체 corpus에서 fallback
-        if not call_text:
-            call_text = extract_call_option_text_from_section(corpus)
+        # 2) 그 Put 안에서 Call을 떼서
+        call_text = extract_call_option_text_from_section(put_text)
 
-        # Put Option에서는 Call block 제거
-        put_text = remove_call_option_text_from_section(section_91) if call_text else section_91
+        # 3) Call은 Call 컬럼으로 보내고
+        row["Call Option"] = call_text if call_text else "공시 확인 바람"
+
+        # 4) Put에서는 Call만 제거한다
+        if call_text:
+            put_text = remove_call_option_text_from_section(put_text)
 
         row["Put Option"] = put_text if put_text else "공시 확인 바람"
-        row["Call Option"] = call_text if call_text else "공시 확인 바람"
 
     # 4) Call 비율 / YTC : 표 key-value 우선
     row["Call 비율"] = _safe_percent(
