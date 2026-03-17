@@ -1134,6 +1134,7 @@ def extract_issue_shares_and_type(
 
     return None, "보통주식"
 
+
 def extract_issue_shares_and_type_section1_exact(
     dfs: List[pd.DataFrame],
     corr_after: Dict[str, str],
@@ -1310,6 +1311,7 @@ def choose_issue_shares_and_type(
 
     # 둘이 다르면 1. 신주의 종류와 수 섹션 전용 보정값 우선
     return new_amt, (new_type or old_type or "보통주식")
+
 
 # [증자전 주식수 추출]
 # - '증자전발행주식총수' 계열 표를 읽어서 총 발행주식수 추출
@@ -2394,6 +2396,7 @@ def extract_investors_bond(dfs: List[pd.DataFrame], corr_after: Dict[str, str]) 
 
     return _single_line(", ".join(final_investors[:15]))
 
+
 def _extract_dates_from_text(text: str) -> List[str]:
     if not text:
         return []
@@ -2498,6 +2501,347 @@ def extract_period_dates_from_tables(
                 return dates[0], ""
 
     return "", ""
+
+
+# ==========================================================
+# Bond exact-section helpers (추가)
+# ==========================================================
+def _first_nonempty_cell(row_vals) -> str:
+    for x in row_vals:
+        s = normalize_text(x)
+        if s:
+            return s
+    return ""
+
+
+def _is_new_top_heading(text: str) -> bool:
+    raw = normalize_text(text)
+    if not raw:
+        return False
+    return bool(re.match(r"^\d+\s*[\.\)]\s*[가-힣A-Za-z]", raw))
+
+
+def _is_numbered_section_heading(text: str, section_no: int, heading_keywords: List[str]) -> bool:
+    raw = normalize_text(text)
+    n = _norm(raw)
+    if not raw:
+        return False
+
+    for kw in heading_keywords:
+        kw_n = _norm(kw)
+        if re.match(rf"^{section_no}[\.\)]?{re.escape(kw_n)}$", n):
+            return True
+        if n.startswith(f"{section_no}{kw_n}"):
+            return True
+    return False
+
+
+def _get_section_block_rows(
+    dfs: List[pd.DataFrame],
+    section_no: int,
+    heading_keywords: List[str],
+    max_rows: int = 10,
+) -> List[List[str]]:
+    """
+    예: 8. 사채발행방법 / 9. 전환에 관한 사항 블록만 잘라서 반환
+    """
+    for df in dfs:
+        try:
+            arr = df.fillna("").astype(str).values
+        except Exception:
+            continue
+
+        R, C = arr.shape
+        for r in range(R):
+            row_list = arr[r].tolist()
+            first_cell = _first_nonempty_cell(row_list)
+            row_join = " ".join([normalize_text(x) for x in row_list if normalize_text(x)])
+
+            if not (
+                _is_numbered_section_heading(first_cell, section_no, heading_keywords)
+                or _is_numbered_section_heading(row_join, section_no, heading_keywords)
+            ):
+                continue
+
+            block_rows = []
+            for rr in range(r, min(r + max_rows, R)):
+                next_row = arr[rr].tolist()
+                next_first = _first_nonempty_cell(next_row)
+
+                if rr > r and _is_new_top_heading(next_first):
+                    break
+
+                block_rows.append(next_row)
+
+            if block_rows:
+                return block_rows
+
+    return []
+
+
+def _clean_section_value_text(text: str, remove_labels: List[str]) -> str:
+    t = normalize_text(text)
+    if not t:
+        return ""
+
+    t = re.sub(r"^\d+\s*[\.\)]\s*", "", t)
+
+    for lb in remove_labels:
+        t = re.sub(rf"^{re.escape(lb)}\s*[:：]?\s*", "", t)
+        t = re.sub(rf"{re.escape(lb)}\s*[:：]?\s*", "", t)
+
+    t = normalize_text(t)
+
+    if not t:
+        return ""
+    if re.fullmatch(r"[\d,\.\-%\s]+", t):
+        return ""
+
+    return t
+
+
+def _extract_text_from_block_rows(
+    block_rows: List[List[str]],
+    label_keywords: List[str],
+) -> str:
+    if not block_rows:
+        return ""
+
+    label_norms = [_norm(x) for x in label_keywords]
+
+    # 1순위: 같은 행에서 라벨 오른쪽 값
+    for row in block_rows:
+        cleaned = [normalize_text(x) for x in row]
+        normed = [_norm(x) for x in cleaned]
+
+        for i, cell in enumerate(normed):
+            if any(lb in cell for lb in label_norms):
+                for cand in cleaned[i + 1:]:
+                    val = _clean_section_value_text(cand, label_keywords)
+                    if val:
+                        return val
+
+                raw = _clean_section_value_text(cleaned[i], label_keywords)
+                if raw:
+                    return raw
+
+    # 2순위: 블록 전체 텍스트에서 사모/공모 판별
+    block_text = " ".join(
+        [" ".join([normalize_text(x) for x in row if normalize_text(x)]) for row in block_rows]
+    )
+    if "사모" in block_text and "공모" not in block_text:
+        return "사모"
+    if "공모" in block_text and "사모" not in block_text:
+        return "공모"
+
+    # 3순위: 블록 첫 행에서 라벨 제거 후 반환
+    first_text = " ".join([normalize_text(x) for x in block_rows[0] if normalize_text(x)])
+    first_text = _clean_section_value_text(first_text, label_keywords)
+    if first_text:
+        return first_text
+
+    return ""
+
+
+def _extract_int_from_block_rows(
+    block_rows: List[List[str]],
+    label_keywords: List[str],
+    min_val: int = 1,
+) -> Optional[int]:
+    if not block_rows:
+        return None
+
+    label_norms = [_norm(x) for x in label_keywords]
+
+    # 1순위: 라벨 오른쪽 셀
+    for row in block_rows:
+        cleaned = [normalize_text(x) for x in row]
+        normed = [_norm(x) for x in cleaned]
+
+        for i, cell in enumerate(normed):
+            if any(lb in cell for lb in label_norms):
+                nums = []
+                for cand in cleaned[i + 1:]:
+                    v = _to_int(cand)
+                    if v is not None and v >= min_val:
+                        nums.append(v)
+                if nums:
+                    return max(nums)
+
+                # 같은 행 fallback
+                row_nums = []
+                for cand in cleaned:
+                    v = _to_int(cand)
+                    if v is not None and v >= min_val:
+                        row_nums.append(v)
+                if row_nums:
+                    return max(row_nums)
+
+    # 2순위: 블록 전체 fallback
+    for row in block_rows:
+        row_text = " ".join([normalize_text(x) for x in row if normalize_text(x)])
+        if any(lb in _norm(row_text) for lb in label_norms):
+            vals = []
+            for cell in row:
+                v = _to_int(cell)
+                if v is not None and v >= min_val:
+                    vals.append(v)
+            if vals:
+                return max(vals)
+
+    return None
+
+
+def _extract_percent_from_block_rows(
+    block_rows: List[List[str]],
+    label_keywords: List[str],
+) -> str:
+    if not block_rows:
+        return ""
+
+    label_norms = [_norm(x) for x in label_keywords]
+
+    # 1순위: 라벨 오른쪽 셀
+    for row in block_rows:
+        cleaned = [normalize_text(x) for x in row]
+        normed = [_norm(x) for x in cleaned]
+
+        for i, cell in enumerate(normed):
+            if any(lb in cell for lb in label_norms):
+                for cand in cleaned[i + 1:]:
+                    if "%" in cand:
+                        return clean_percent(cand)
+
+                for cand in cleaned[i + 1:]:
+                    v = _to_float(cand)
+                    if v is not None:
+                        return f"{v:g}%"
+
+                # 같은 행 fallback
+                for cand in cleaned:
+                    if "%" in cand:
+                        return clean_percent(cand)
+                for cand in cleaned:
+                    v = _to_float(cand)
+                    if v is not None:
+                        return f"{v:g}%"
+
+    return ""
+
+
+def extract_bond_method_from_section8(
+    dfs: List[pd.DataFrame],
+    corr_after: Dict[str, str],
+) -> str:
+    """
+    모집방식은 반드시 '8. 사채발행방법'에서만 추출
+    """
+    section_labels = ["사채발행방법", "모집방법", "모집방식", "발행방법"]
+
+    # 1순위: 정정공시
+    if corr_after:
+        for k, v in corr_after.items():
+            if _is_numbered_section_heading(k, 8, section_labels):
+                val = _clean_section_value_text(v, section_labels)
+                if val:
+                    return val
+
+        for k, v in corr_after.items():
+            k_n = _norm(k)
+            if any(_norm(lb) in k_n for lb in section_labels):
+                val = _clean_section_value_text(v, section_labels)
+                if val:
+                    if "사모" in val and "공모" not in val:
+                        return "사모"
+                    if "공모" in val and "사모" not in val:
+                        return "공모"
+                    return val
+
+    # 2순위: 실제 표에서 8번 섹션
+    block_rows = _get_section_block_rows(dfs, 8, section_labels, max_rows=6)
+    val = _extract_text_from_block_rows(block_rows, section_labels)
+    if val:
+        return val
+
+    return ""
+
+
+def extract_bond_shares_and_ratio_from_section9(
+    dfs: List[pd.DataFrame],
+    corr_after: Dict[str, str],
+    bond_kind: str,
+) -> Tuple[str, str]:
+    """
+    전환주식수 / 주식총수대비 비율은 반드시 9번 섹션에서만 추출
+    CB: 9. 전환에 관한 사항
+    EB: 9. 교환에 관한 사항
+    BW: 9. 권리행사에 관한 사항 / 신주인수권에 관한 사항
+    """
+    if bond_kind == "CB":
+        section_titles = ["전환에 관한 사항"]
+        share_labels = [
+            "전환에 따라 발행할 주식수",
+            "전환에 따라 발행할 주식의 수",
+            "전환주식수",
+            "주식수",
+        ]
+    elif bond_kind == "EB":
+        section_titles = ["교환에 관한 사항"]
+        share_labels = [
+            "교환대상 주식수",
+            "교환대상주식수",
+            "주식수",
+        ]
+    else:  # BW
+        section_titles = ["권리행사에 관한 사항", "신주인수권에 관한 사항"]
+        share_labels = [
+            "행사주식수",
+            "권리행사로 발행할 주식수",
+            "주식수",
+        ]
+
+    ratio_labels = [
+        "주식총수대비 비율(%)",
+        "발행주식총수 대비 비율(%)",
+        "주식총수 대비 비율",
+        "총수대비 비율",
+    ]
+
+    # 1순위: 정정공시
+    share_val = ""
+    ratio_val = ""
+
+    if corr_after:
+        for k, v in corr_after.items():
+            k_n = _norm(k)
+
+            if not share_val and any(_norm(lb) in k_n for lb in share_labels):
+                num = _to_int(v)
+                if num is not None and num > 0:
+                    share_val = f"{num:,}"
+
+            if not ratio_val and any(_norm(lb) in k_n for lb in ratio_labels):
+                if "%" in str(v):
+                    ratio_val = clean_percent(str(v))
+                else:
+                    fv = _to_float(v)
+                    if fv is not None:
+                        ratio_val = f"{fv:g}%"
+
+    # 2순위: 실제 표에서 9번 섹션
+    block_rows = _get_section_block_rows(dfs, 9, section_titles, max_rows=10)
+
+    if block_rows:
+        if not share_val:
+            num = _extract_int_from_block_rows(block_rows, share_labels, min_val=1)
+            if num is not None and num > 0:
+                share_val = f"{num:,}"
+
+        if not ratio_val:
+            ratio_val = _extract_percent_from_block_rows(block_rows, ratio_labels)
+
+    return share_val, ratio_val
+
 
 # ==========================================================
 # Parsers
@@ -2733,11 +3077,15 @@ def parse_bond_record(rec: Dict[str, Any]):
         corr_after,
     )
     row["납입일"] = extract_payment_date_bond(tables, corr_after)
-    row["모집방식"] = scan_label_value_preferring_correction(
+
+    # 모집방식: 반드시 8. 사채발행방법
+    exact_method = extract_bond_method_from_section8(tables, corr_after)
+    row["모집방식"] = exact_method or scan_label_value_preferring_correction(
         tables,
         ["사채발행방법", "모집방법", "모집방식", "발행방법", "공모여부"],
         corr_after,
     )
+
     row["발행상품"] = extract_product_type_bond(tables, corr_after, title)
 
     row["행사(전환)가액(원)"] = get_corr_num(
@@ -2745,12 +3093,21 @@ def parse_bond_record(rec: Dict[str, Any]):
         ["가액", "원"],
         50,
     )
-    row["전환주식수"] = get_corr_num(
+
+    # 전환주식수 / 주식총수대비 비율: 반드시 9번 섹션
+    exact_share_cnt, exact_share_ratio = extract_bond_shares_and_ratio_from_section9(
+        tables,
+        corr_after,
+        row["구분"],
+    )
+
+    row["전환주식수"] = exact_share_cnt or get_corr_num(
         ["전환에 따라 발행할 주식수", "전환에 따라 발행할 주식의 수", "전환주식수", "교환대상 주식수", "교환대상주식수", "행사주식수", "권리행사로 발행할 주식수", "주식수"],
         ["주식수"],
         50,
     )
-    row["주식총수대비 비율"] = clean_percent(
+
+    row["주식총수대비 비율"] = exact_share_ratio or clean_percent(
         scan_label_value_preferring_correction(
             tables,
             ["주식총수 대비 비율(%)", "발행주식총수 대비 비율(%)", "주식총수 대비 비율", "총수대비 비율"],
@@ -2796,14 +3153,14 @@ def parse_bond_record(rec: Dict[str, Any]):
             continue
         if not normalize_text(row[h]):
             missing.append(h)
-    
+
     if not row["구분"]:
         suspicious.append("구분")
     if row["회사명"] in ["유", "코", "넥"]:
         suspicious.append("회사명")
     if row["보고서명"] and len(row["보고서명"]) < 5:
         suspicious.append("보고서명")
-    
+
     return row, missing, suspicious
 
 
@@ -2951,36 +3308,4 @@ def run_parser():
         title = clean_title(rec["title"] or "")
 
         try:
-            if "유상증자결정" in title.replace(" ", ""):
-                row, missing, suspicious = parse_rights_record(rec)
-                mode, rownum = upsert_structured_row(rights_ws, RIGHTS_HEADERS, row, "rights")
-                ok += 1
-                print(f"[OK][RIGHTS][{mode}] {acpt_no} {title}")
-
-            elif any(
-                k in title.replace(" ", "")
-                for k in [
-                    "전환사채권발행결정",
-                    "교환사채권발행결정",
-                    "신주인수권부사채권발행결정",
-                ]
-            ):
-                row, missing, suspicious = parse_bond_record(rec)
-                mode, rownum = upsert_structured_row(bond_ws, BOND_HEADERS, row, "bond")
-                ok += 1
-                print(f"[OK][BOND][{mode}] {acpt_no} {title}")
-
-            else:
-                skip += 1
-                print(f"[SKIP] {acpt_no} {title}")
-
-        except Exception as e:
-            fail += 1
-            print(f"[FAIL] {acpt_no} {title} :: {e}")
-
-    print(f"[DONE] ok={ok} skip={skip} fail={fail}")
-
-
-# [직접 실행 진입점]
-if __name__ == "__main__":
-    run_parser()
+            if "유상증자결정" in title
