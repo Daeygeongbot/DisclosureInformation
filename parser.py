@@ -1134,7 +1134,6 @@ def extract_issue_shares_and_type(
 
     return None, "보통주식"
 
-
 def extract_issue_shares_and_type_section1_exact(
     dfs: List[pd.DataFrame],
     corr_after: Dict[str, str],
@@ -1311,7 +1310,6 @@ def choose_issue_shares_and_type(
 
     # 둘이 다르면 1. 신주의 종류와 수 섹션 전용 보정값 우선
     return new_amt, (new_type or old_type or "보통주식")
-
 
 # [증자전 주식수 추출]
 # - '증자전발행주식총수' 계열 표를 읽어서 총 발행주식수 추출
@@ -2396,7 +2394,6 @@ def extract_investors_bond(dfs: List[pd.DataFrame], corr_after: Dict[str, str]) 
 
     return _single_line(", ".join(final_investors[:15]))
 
-
 def _extract_dates_from_text(text: str) -> List[str]:
     if not text:
         return []
@@ -2807,10 +2804,10 @@ def extract_bond_shares_and_ratio_from_section9(
         "총수대비 비율",
     ]
 
-    # 1순위: 정정공시
     share_val = ""
     ratio_val = ""
 
+    # 1순위: 정정공시
     if corr_after:
         for k, v in corr_after.items():
             k_n = _norm(k)
@@ -3106,7 +3103,6 @@ def parse_bond_record(rec: Dict[str, Any]):
         ["주식수"],
         50,
     )
-
     row["주식총수대비 비율"] = exact_share_ratio or clean_percent(
         scan_label_value_preferring_correction(
             tables,
@@ -3308,4 +3304,36 @@ def run_parser():
         title = clean_title(rec["title"] or "")
 
         try:
-            if "유상증자결정" in title
+            if "유상증자결정" in title.replace(" ", ""):
+                row, missing, suspicious = parse_rights_record(rec)
+                mode, rownum = upsert_structured_row(rights_ws, RIGHTS_HEADERS, row, "rights")
+                ok += 1
+                print(f"[OK][RIGHTS][{mode}] {acpt_no} {title}")
+
+            elif any(
+                k in title.replace(" ", "")
+                for k in [
+                    "전환사채권발행결정",
+                    "교환사채권발행결정",
+                    "신주인수권부사채권발행결정",
+                ]
+            ):
+                row, missing, suspicious = parse_bond_record(rec)
+                mode, rownum = upsert_structured_row(bond_ws, BOND_HEADERS, row, "bond")
+                ok += 1
+                print(f"[OK][BOND][{mode}] {acpt_no} {title}")
+
+            else:
+                skip += 1
+                print(f"[SKIP] {acpt_no} {title}")
+
+        except Exception as e:
+            fail += 1
+            print(f"[FAIL] {acpt_no} {title} :: {e}")
+
+    print(f"[DONE] ok={ok} skip={skip} fail={fail}")
+
+
+# [직접 실행 진입점]
+if __name__ == "__main__":
+    run_parser()
