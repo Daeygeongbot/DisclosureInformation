@@ -75,9 +75,8 @@ def _is_top_heading(text: str) -> bool:
 
 # ==========================================================
 # [9.1 섹션 추출]
-# - 일반 보고서: 첫 번째 9.1 사용
-# - 정정 보고서: 마지막 9.1 사용
-# - "9.1 옵션에 관한 사항" 제목 자체는 제거
+# - 일반 보고서: 첫 번째 실질 9.1 사용
+# - 정정 보고서: 마지막 실질 9.1 사용
 # ==========================================================
 def _is_91_heading(line: str) -> bool:
     s = _clean_line(line)
@@ -131,20 +130,9 @@ def _strip_91_heading_prefix(text: str) -> str:
     return s
 
 
-def extract_91_option_section_from_lines(lines: List[str], use_last_91: bool = False) -> str:
-    if not lines:
+def _extract_91_section_from_start_idx(lines: List[str], start_idx: int) -> str:
+    if start_idx < 0 or start_idx >= len(lines):
         return ""
-
-    hit_indices = []
-    for idx, line in enumerate(lines):
-        s = _clean_line(line)
-        if s and _is_91_heading(s):
-            hit_indices.append(idx)
-
-    if not hit_indices:
-        return ""
-
-    start_idx = hit_indices[-1] if use_last_91 else hit_indices[0]
 
     bucket = []
 
@@ -165,6 +153,21 @@ def extract_91_option_section_from_lines(lines: List[str], use_last_91: bool = F
     text = " ".join(bucket).strip()
     text = re.sub(r"\s{2,}", " ", text)
     return text
+
+
+def extract_all_91_sections_from_lines(lines: List[str]) -> List[str]:
+    if not lines:
+        return []
+
+    sections = []
+    for idx, line in enumerate(lines):
+        s = _clean_line(line)
+        if s and _is_91_heading(s):
+            sec = _extract_91_section_from_start_idx(lines, idx)
+            if sec:
+                sections.append(sec)
+
+    return sections
 
 
 def extract_91_option_section_from_corpus(corpus: str, use_last_91: bool = False) -> str:
@@ -218,10 +221,10 @@ def extract_91_option_section_from_corpus(corpus: str, use_last_91: bool = False
 
 
 # ==========================================================
-# [9.1 단순 예외]
+# [9.1 예외]
 # 1) 9.1이 "-" 면 Put/Call 둘 다 "-"
-# 2) 9.1 안에 22./23. 기타 투자판단에 참고할 사항이 있으면
-#    Put/Call 둘 다 "공시 확인 바람"
+# 2) 9.1 전체가 22./23. 참조형일 때만 공시 확인 바람
+#    (내용 중간/끝에 23이 한번 나온다고 바로 공시 확인 바람 아님)
 # ==========================================================
 def _is_dash_91_section(text: str) -> bool:
     s = _clean_line(text)
@@ -232,18 +235,63 @@ def _is_dash_91_section(text: str) -> bool:
     return bool(re.fullmatch(r"-+", s))
 
 
-def _contains_22_or_23_reference(text: str) -> bool:
+def _is_reference_only_22_or_23_section(text: str) -> bool:
     s = _clean_line(text)
     if not s:
         return False
 
     patterns = [
-        r"(?:^|[\s\[])22\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항",
-        r"(?:^|[\s\[])23\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항",
-        r"(?:^|[\s\[])22\s*[\.\)]\s*기타투자판단에참고할사항",
-        r"(?:^|[\s\[])23\s*[\.\)]\s*기타투자판단에참고할사항",
+        r"^\s*(?:22|23)\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항(?:을)?\s*참고(?:하여)?\s*주시기\s*바랍니다\.?\s*$",
+        r"^\s*(?:22|23)\s*[\.\)]\s*기타투자판단에참고할사항(?:을)?\s*참고(?:하여)?\s*주시기\s*바랍니다\.?\s*$",
+        r"^\s*조기상환청구권\s*\(\s*Put\s*Option\s*\)\s*,?\s*매도청구권\s*\(\s*Call\s*Option\s*\)\s*에\s*관한\s*사항(?:은)?\s*,?\s*(?:22|23)\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항(?:을)?\s*참고(?:하여)?\s*주시기\s*바랍니다\.?\s*$",
+        r"^\s*조기상환청구권\s*\(\s*Put\s*Option\s*\)\s*,?\s*매도청구권\s*\(\s*CALL\s*OPTION\s*\)\s*에\s*관한\s*사항(?:은)?\s*,?\s*(?:22|23)\s*[\.\)]\s*기타\s*투자판단에\s*참고할\s*사항(?:을)?\s*참고(?:하여)?\s*주시기\s*바랍니다\.?\s*$",
     ]
     return any(re.search(p, s, flags=re.IGNORECASE) for p in patterns)
+
+
+def _looks_substantive_91_section(text: str) -> bool:
+    s = _clean_line(text)
+    if not s:
+        return False
+
+    if _is_dash_91_section(s):
+        return False
+
+    if _is_reference_only_22_or_23_section(s):
+        return False
+
+    substantive_patterns = [
+        r"조기상환청구권\s*\(\s*Put\s*Option\s*\)",
+        r"Put\s*Option",
+        r"매도청구권\s*\(\s*Call\s*Option\s*\)",
+        r"매도청구권\s*\(\s*CALL\s*OPTION\s*\)",
+        r"중도상환청구권\s*\(\s*Call\s*Option\s*\)",
+        r"중도상환청구권\s*\(\s*CALL\s*OPTION\s*\)",
+        r"발행회사의\s*매도청구권",
+        r"\[\s*Call Option에 관한 사항\s*\]",
+        r"\[\s*매도청구권",
+        r"가\.\s*조기상환청구권",
+        r"나\.\s*(?:발행회사의\s*)?(?:매도청구권|중도상환청구권)",
+    ]
+    return any(re.search(p, s, flags=re.IGNORECASE) for p in substantive_patterns)
+
+
+def _select_best_91_section(sections: List[str], is_corr: bool) -> str:
+    if not sections:
+        return ""
+
+    if is_corr:
+        # 정정 보고서는 아래쪽부터 올라오면서 실제 본문형 9.1을 우선 선택
+        for sec in reversed(sections):
+            if _looks_substantive_91_section(sec):
+                return sec
+        return sections[-1]
+
+    # 일반 보고서는 위쪽부터 내려오면서 첫 실질 9.1 선택
+    for sec in sections:
+        if _looks_substantive_91_section(sec):
+            return sec
+    return sections[0]
 
 
 # ==========================================================
@@ -256,18 +304,24 @@ CALL_START_PATTERNS = [
     r"\[\s*call option에 관한 사항\s*\]",
     r"\[\s*매도청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항\s*\]",
     r"\[\s*매도청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항\s*\]",
-    r"\[\s*매도청구권\s*\(\s*Call option\s*\)\s*에\s*관한\s*사항\s*\]",
     r"\[\s*중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항\s*\]",
     r"\[\s*중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항\s*\]",
     r"<\s*Call Option\s*>",
-    r"매도청구권\s*\(\s*Call Option\s*\)",
-    r"매도청구권\s*\(\s*CALL OPTION\s*\)",
-    r"매도청구권\s*\(\s*Call option\s*\)",
-    r"매도청구권\s*\(\s*콜옵션\s*\)",
-    r"중도상환청구권\s*\(\s*Call Option\s*\)",
-    r"중도상환청구권\s*\(\s*CALL OPTION\s*\)",
+    r"발행회사의\s*매도청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
+    r"발행회사의\s*매도청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
     r"발행회사의\s*중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
     r"발행회사의\s*중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
+    r"매도청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
+    r"매도청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
+    r"중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
+    r"중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
+    r"매도청구권\s*\(\s*Call Option\s*\)",
+    r"매도청구권\s*\(\s*CALL OPTION\s*\)",
+    r"중도상환청구권\s*\(\s*Call Option\s*\)",
+    r"중도상환청구권\s*\(\s*CALL OPTION\s*\)",
+    r"콜옵션\s*\(\s*Call Option\s*\)",
+    r"콜옵션\s*\(\s*CALL OPTION\s*\)",
+    r"Call Option에 관한 사항",
 ]
 
 CALL_END_PATTERNS = [
@@ -565,17 +619,15 @@ def extract_call_ratio_and_ytc_from_text(text: str) -> Tuple[str, str]:
 # 3. Call은 Call 컬럼으로 보내고
 # 4. Put에서는 Call만 제거한다
 # 5. 9.1이 "-" 면 Put/Call 둘 다 "-"
-# 6. 9.1이 22./23. 이면 공시 확인 바람
-# 7. 정정 보고서면 위쪽 9.1은 넘기고 마지막 9.1부터 시작
+# 6. 9.1 전체가 22./23. 참조형이면 공시 확인 바람
+# 7. 정정 보고서면 위쪽 9.1은 넘기고 아래쪽 "실제 본문형 9.1"을 우선 사용
 # ==========================================================
 def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
     raw_title = rec.get("title", "") or ""
     title = clean_title(raw_title)
     tables = rec.get("tables", [])
 
-    # 정정 여부는 반드시 원본 title 기준으로 판단
     is_corr = is_correction_title(raw_title) or is_correction_title(title)
-
     corr_after = extract_correction_after_map(tables) if is_corr else {}
 
     row = {
@@ -588,46 +640,51 @@ def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
     lines = _lines_from_tables(tables)
     corpus = _corpus_from_lines(lines)
 
-    # 정정 보고서면 마지막 9.1, 일반 보고서면 첫 9.1
-    use_last_91 = is_corr
+    # 1) lines 기준으로 9.1 후보 전부 추출
+    sec_candidates = extract_all_91_sections_from_lines(lines)
+    section_91 = _select_best_91_section(sec_candidates, is_corr=is_corr)
 
-    section_91 = extract_91_option_section_from_lines(lines, use_last_91=use_last_91)
+    # 2) lines에서 못 잡으면 corpus fallback
     if not section_91:
-        section_91 = extract_91_option_section_from_corpus(corpus, use_last_91=use_last_91)
+        section_91 = extract_91_option_section_from_corpus(corpus, use_last_91=is_corr)
 
     section_91 = _clean_line(section_91)
 
+    # 3) 9.1 자체를 못 찾으면 공시 확인 바람
     if not section_91:
         row["Put Option"] = "공시 확인 바람"
         row["Call Option"] = "공시 확인 바람"
         call_text = ""
 
+    # 4) 9.1이 "-" 이면 Put/Call 둘 다 "-"
     elif _is_dash_91_section(section_91):
         row["Put Option"] = "-"
         row["Call Option"] = "-"
         call_text = ""
 
-    elif _contains_22_or_23_reference(section_91):
+    # 5) 9.1 전체가 22./23. 참조형이면 Put/Call 둘 다 공시 확인 바람
+    elif _is_reference_only_22_or_23_section(section_91):
         row["Put Option"] = "공시 확인 바람"
         row["Call Option"] = "공시 확인 바람"
         call_text = ""
 
     else:
-        # 1. 먼저 9.1 전체를 Put에 넣고
+        # 6) 먼저 9.1 전체를 Put 원본으로 잡는다
         put_text = section_91
 
-        # 2. 그 Put 안에서 Call을 떼서
+        # 7) 그 Put 안에서만 Call을 찾는다
         call_text = extract_call_option_text_from_section(put_text)
 
-        # 3. Call은 Call 컬럼으로 보내고
+        # 8) Call은 Call 컬럼으로 보낸다
         row["Call Option"] = call_text if call_text else "공시 확인 바람"
 
-        # 4. Put에서는 Call만 제거한다
+        # 9) Put에서는 Call만 제거한다
         if call_text:
             put_text = remove_call_option_text_from_section(put_text)
 
         row["Put Option"] = put_text if put_text else "공시 확인 바람"
 
+    # 10) Call 비율 / YTC : 표 key-value 우선
     row["Call 비율"] = _safe_percent(
         scan_label_value_preferring_correction(
             tables,
@@ -644,6 +701,7 @@ def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
         )
     )
 
+    # 11) 표 grid fallback
     if not row["Call 비율"] or not row["YTC"]:
         table_ratio, table_ytc, _ = extract_call_ratio_ytc_from_table_grid(tables)
 
@@ -652,6 +710,7 @@ def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
         if not row["YTC"]:
             row["YTC"] = table_ytc
 
+    # 12) Call 본문 fallback
     if (not row["Call 비율"] or not row["YTC"]) and call_text and call_text != "공시 확인 바람":
         ext_ratio, ext_ytc = extract_call_ratio_and_ytc_from_text(call_text)
 
