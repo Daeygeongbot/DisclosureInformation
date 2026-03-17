@@ -1,3 +1,4 @@
+#Put&Call옵션에 RAW데이터를 주식연계시트에 있는 컬럼에 넣는 코드
 import re
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -72,37 +73,10 @@ def _is_top_heading(text: str) -> bool:
     return bool(re.match(r"^\d+\s*[\.\)]\s*[가-힣A-Za-z]", s))
 
 
-def _join_lines(lines: List[str]) -> str:
-    return re.sub(r"\s{2,}", " ", " ".join([_clean_line(x) for x in lines if _clean_line(x)])).strip()
-
-
-def _is_explicit_empty_option_text(text: str) -> bool:
-    s = _clean_line(text)
-    if not s:
-        return False
-
-    ns = re.sub(r"[\s\.\,]", "", s).lower()
-    empty_markers = {
-        "-",
-        "--",
-        "없음",
-        "없습니다",
-        "해당없음",
-        "해당사항없음",
-        "해당사항없습니다",
-        "해당사항이없음",
-        "해당사항이없습니다",
-        "미해당",
-        "none",
-        "n/a",
-        "na",
-    }
-    return ns in empty_markers
-
-
 # ==========================================================
 # [9.1 섹션 추출]
-# - 문자열이 아니라 line list 자체를 먼저 확보
+# - Put Option의 원본 텍스트가 되는 9.1 전체 섹션
+# - 단, "9-1. 옵션에 관한 사항" 제목 자체는 제거
 # ==========================================================
 def _is_91_heading(line: str) -> bool:
     s = _clean_line(line)
@@ -152,15 +126,16 @@ def _strip_91_heading_prefix(text: str) -> str:
         new_s = re.sub(pat, "", s, flags=re.IGNORECASE).strip()
         if new_s != s:
             return new_s
+
     return s
 
 
-def extract_91_option_section_lines(lines: List[str]) -> List[str]:
+def extract_91_option_section_from_lines(lines: List[str]) -> str:
     if not lines:
-        return []
+        return ""
 
     started = False
-    bucket: List[str] = []
+    bucket = []
 
     for line in lines:
         s = _clean_line(line)
@@ -180,11 +155,9 @@ def extract_91_option_section_lines(lines: List[str]) -> List[str]:
 
         bucket.append(s)
 
-    return bucket
-
-
-def extract_91_option_section_from_lines(lines: List[str]) -> str:
-    return _join_lines(extract_91_option_section_lines(lines))
+    text = " ".join(bucket).strip()
+    text = re.sub(r"\s{2,}", " ", text)
+    return text
 
 
 def extract_91_option_section_from_corpus(corpus: str) -> str:
@@ -239,6 +212,13 @@ def extract_91_option_section_from_corpus(corpus: str) -> str:
 
 # ==========================================================
 # [9.1 예외 처리]
+# 1) 9.1이 참조 문장만 있는 경우:
+#    "조기상환청구권(Put Option), 매도청구권(Call Option)에 관한 사항,
+#     23. 기타 투자판단에 참고할 사항을 참고하시기 바랍니다."
+#    -> Put/Call 둘 다 "공시 확인 바람"
+#
+# 2) 9.1 안에 "22. 기타 투자판단에 참고할 사항"이 들어오면
+#    -> Put/Call 둘 다 "공시 확인 바람"
 # ==========================================================
 def _is_reference_only_91_section(text: str) -> bool:
     s = _clean_line(text)
@@ -265,30 +245,43 @@ def _contains_invalid_22_reference_in_91(text: str) -> bool:
 
 
 # ==========================================================
-# [Call line 기준 분리]
-# - 문자열 전체 regex 자르기 대신
-# - 9.1 line list 안에서 Call heading이 시작되는 줄부터 분리
+# [Call Option 헤딩 / 종료 패턴]
+# - Call은 Put Option 텍스트 안에서 잘라낸다
+# - Call 헤딩은 삭제하지 않고 같이 가져간다
 # ==========================================================
-CALL_HEADING_LINE_PATTERNS = [
-    r"^\[\s*Call Option에 관한 사항\s*\]$",
-    r"^\[\s*call option에 관한 사항\s*\]$",
-    r"^\[\s*매도청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항\s*\]$",
-    r"^\[\s*매도청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항\s*\]$",
-    r"^\[\s*중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항\s*\]$",
-    r"^\[\s*중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항\s*\]$",
-    r"^<\s*Call Option\s*>$",
-    r"^\d+\)\s*매도청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
-    r"^\d+\)\s*매도청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
-    r"^\d+\)\s*중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
-    r"^\d+\)\s*중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
-    r"^매도청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
-    r"^매도청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
-    r"^중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
-    r"^중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
-    r"^발행회사의\s*중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
-    r"^발행회사의\s*중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
+CALL_START_PATTERNS = [
+    r"\[\s*Call Option에 관한 사항\s*\]",
+    r"\[\s*call option에 관한 사항\s*\]",
+    r"\[\s*매도청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항\s*\]",
+    r"\[\s*매도청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항\s*\]",
+    r"\[\s*중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항\s*\]",
+    r"\[\s*중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항\s*\]",
+    r"<\s*Call Option\s*>",
+    r"매도청구권\s*\(\s*Call Option\s*\)",
+    r"매도청구권\s*\(\s*CALL OPTION\s*\)",
+    r"중도상환청구권\s*\(\s*Call Option\s*\)",
+    r"중도상환청구권\s*\(\s*CALL OPTION\s*\)",
+    r"발행회사의\s*중도상환청구권\s*\(\s*Call Option\s*\)\s*에\s*관한\s*사항",
+    r"발행회사의\s*중도상환청구권\s*\(\s*CALL OPTION\s*\)\s*에\s*관한\s*사항",
 ]
 
+CALL_END_PATTERNS = [
+    r"이\s*외\s*Put Option",
+    r"조기상환청구권\s*\(\s*Put Option\s*\)",
+    r"사채권자의\s*조기상환청구권",
+    r"(?:^|[\s\]])9\s*[-\.]?\s*2\s*[\)\.]?\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])9\s*[-\.]?\s*3\s*[\)\.]?\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])10\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])11\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])12\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])13\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])20\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])21\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])22\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])23\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])24\.\s*[가-힣A-Za-z\(]",
+    r"(?:^|[\s\]])25\.\s*[가-힣A-Za-z\(]",
+]
 
 REFERENCE_TAIL_PATTERNS = [
     r'\s*(?:이\s*외|이외)\s*.*?기타 투자판단에 참고할 사항.*$',
@@ -299,6 +292,42 @@ REFERENCE_TAIL_PATTERNS = [
 ]
 
 
+def _find_earliest_match(text: str, patterns: List[str], start_pos: int = 0):
+    best = None
+    for pat in patterns:
+        m = re.search(pat, text[start_pos:], flags=re.IGNORECASE)
+        if m:
+            abs_start = start_pos + m.start()
+            abs_end = start_pos + m.end()
+            if best is None or abs_start < best[0]:
+                best = (abs_start, abs_end, pat)
+    return best
+
+
+def locate_call_option_span(text: str) -> Optional[Tuple[int, int]]:
+    raw = _clean_line(text)
+    if not raw:
+        return None
+
+    start_match = _find_earliest_match(raw, CALL_START_PATTERNS)
+    if not start_match:
+        return None
+
+    start_idx = start_match[0]
+    sub = raw[start_idx:]
+
+    cut = len(sub)
+    end_match = _find_earliest_match(sub[1:], CALL_END_PATTERNS)
+    if end_match:
+        cut = min(cut, end_match[0] + 1)
+
+    end_idx = start_idx + cut
+    if end_idx <= start_idx:
+        return None
+
+    return start_idx, end_idx
+
+
 def _trim_reference_tail(text: str) -> str:
     s = _clean_line(text)
     for pat in REFERENCE_TAIL_PATTERNS:
@@ -306,39 +335,39 @@ def _trim_reference_tail(text: str) -> str:
     return s
 
 
-def _find_call_heading_line_index(section_lines: List[str]) -> Optional[int]:
-    if not section_lines:
-        return None
+def extract_call_option_text_from_section(section_text: str) -> str:
+    if not section_text:
+        return ""
 
-    for i, line in enumerate(section_lines):
-        s = _clean_line(line)
-        if not s:
-            continue
+    raw = _clean_line(section_text)
+    span = locate_call_option_span(raw)
+    if not span:
+        return ""
 
-        for pat in CALL_HEADING_LINE_PATTERNS:
-            if re.search(pat, s, flags=re.IGNORECASE):
-                return i
+    start_idx, end_idx = span
+    result = raw[start_idx:end_idx].strip()
+    result = _trim_reference_tail(result)
+    result = re.sub(r"\s{2,}", " ", result)
+    return result.strip()
 
-    return None
 
+def remove_call_option_text_from_section(section_text: str) -> str:
+    if not section_text:
+        return ""
 
-def split_put_call_from_91_lines(section_lines: List[str]) -> Tuple[str, str]:
-    if not section_lines:
-        return "", ""
+    raw = _clean_line(section_text)
+    span = locate_call_option_span(raw)
+    if not span:
+        return raw
 
-    idx = _find_call_heading_line_index(section_lines)
+    start_idx, end_idx = span
+    kept = (raw[:start_idx] + " " + raw[end_idx:]).strip()
 
-    if idx is None:
-        put_text = _join_lines(section_lines)
-        return _trim_reference_tail(put_text), ""
-
-    put_lines = section_lines[:idx]
-    call_lines = section_lines[idx:]
-
-    put_text = _trim_reference_tail(_join_lines(put_lines))
-    call_text = _trim_reference_tail(_join_lines(call_lines))
-
-    return put_text, call_text
+    kept = _trim_reference_tail(kept)
+    kept = re.sub(r"\s{2,}", " ", kept)
+    kept = re.sub(r"\s+([,\.\)])", r"\1", kept)
+    kept = re.sub(r"(\(\s+)", "(", kept)
+    return kept.strip()
 
 
 # ==========================================================
@@ -368,6 +397,7 @@ def _to_pct_text(cell: Any, min_v: float = None, max_v: float = None) -> str:
         return ""
     if max_v is not None and val > max_v:
         return ""
+
     if float(val).is_integer():
         return f"{int(val)}%"
     return f"{val}%"
@@ -524,11 +554,10 @@ def extract_call_ratio_and_ytc_from_text(text: str) -> Tuple[str, str]:
 
 # ==========================================================
 # [최종 파서]
-# - 네가 말한 1차 로직 그대로:
-#   1) 먼저 9.1 전체 확보
-#   2) 9.1 전체를 Put 후보로 둠
-#   3) 9.1 line 안에서 Call heading line부터 Call로 떼어냄
-#   4) 그 앞부분만 Put으로 남김
+# - Put Option = 9.1 전체 - Call block 제거
+# - Call Option = Put 원문 안에서 잘라낸 Call block (헤딩 포함)
+# - 단, 9.1이 참조 문장만 있거나 22.기타 투자판단...이 들어오면
+#   Put/Call 둘 다 "공시 확인 바람"
 # ==========================================================
 def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
     title = clean_title(rec.get("title", "") or "")
@@ -545,43 +574,41 @@ def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
     lines = _lines_from_tables(tables)
     corpus = _corpus_from_lines(lines)
 
-    section_91_lines = extract_91_option_section_lines(lines)
-    section_91 = _join_lines(section_91_lines)
-
+    # 1) 9.1 전체 섹션 추출
+    section_91 = extract_91_option_section_from_lines(lines)
     if not section_91:
         section_91 = extract_91_option_section_from_corpus(corpus)
 
-    call_text = ""
+    section_91 = _clean_line(section_91)
 
-    if _is_explicit_empty_option_text(section_91):
-        row["Put Option"] = "-"
-        row["Call Option"] = "-"
+    # 2) 예외 처리
+    force_disclosure_check = False
+    if section_91:
+        if _is_reference_only_91_section(section_91):
+            force_disclosure_check = True
+        elif _contains_invalid_22_reference_in_91(section_91):
+            force_disclosure_check = True
 
+    # 3) Put / Call 추출
+    if force_disclosure_check:
+        row["Put Option"] = "공시 확인 바람"
+        row["Call Option"] = "공시 확인 바람"
+        call_text = ""
     else:
-        force_disclosure_check = False
-        if section_91:
-            if _is_reference_only_91_section(section_91):
-                force_disclosure_check = True
-            elif _contains_invalid_22_reference_in_91(section_91):
-                force_disclosure_check = True
+        # section_91에서 Call block 추출 (헤딩 포함)
+        call_text = extract_call_option_text_from_section(section_91)
 
-        if force_disclosure_check:
-            row["Put Option"] = "공시 확인 바람"
-            row["Call Option"] = "공시 확인 바람"
-        else:
-            if section_91_lines:
-                put_text, call_text = split_put_call_from_91_lines(section_91_lines)
-            else:
-                # 9.1 line 추출이 안 된 경우에만 fallback
-                put_text = section_91 if section_91 else corpus
-                call_text = ""
+        # 9.1 안에서 못 찾으면 전체 corpus에서 fallback
+        if not call_text:
+            call_text = extract_call_option_text_from_section(corpus)
 
-            put_text = _clean_line(put_text)
-            call_text = _clean_line(call_text)
+        # Put Option에서는 Call block 제거
+        put_text = remove_call_option_text_from_section(section_91) if call_text else section_91
 
-            row["Put Option"] = put_text if put_text else "공시 확인 바람"
-            row["Call Option"] = call_text if call_text else "공시 확인 바람"
+        row["Put Option"] = put_text if put_text else "공시 확인 바람"
+        row["Call Option"] = call_text if call_text else "공시 확인 바람"
 
+    # 4) Call 비율 / YTC : 표 key-value 우선
     row["Call 비율"] = _safe_percent(
         scan_label_value_preferring_correction(
             tables,
@@ -598,6 +625,7 @@ def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
         )
     )
 
+    # 5) 표 grid fallback
     if not row["Call 비율"] or not row["YTC"]:
         table_ratio, table_ytc, _ = extract_call_ratio_ytc_from_table_grid(tables)
 
@@ -606,6 +634,7 @@ def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
         if not row["YTC"]:
             row["YTC"] = table_ytc
 
+    # 6) Call 본문 fallback
     if (not row["Call 비율"] or not row["YTC"]) and call_text and call_text != "공시 확인 바람":
         ext_ratio, ext_ytc = extract_call_ratio_and_ytc_from_text(call_text)
 
