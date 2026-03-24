@@ -1065,32 +1065,133 @@ def extract_issue_shares_and_type_section1_exact(
             return False
         return bool(re.match(r"^\d+\s*[\.\)]\s*[가-힣A-Za-z]", raw))
 
-def _extract_num_from_row_by_label(row_vals: List[str], label_kws: List[str]) -> Optional[int]:
-    cleaned = [normalize_text(x) for x in row_vals]
-    normed = [_norm(x) for x in cleaned]
-    label_kws_norm = [_norm(x) for x in label_kws]
-
-    def _is_bad_candidate(s: str) -> bool:
+    def _is_bad_share_candidate(s: str) -> bool:
         t = normalize_text(s)
-        if not t or t == "-":
+        n = _norm(t)
+
+        if not t:
             return True
-        if re.match(r"^\d+\s*[\.\)]", t):   # 1. / 2) 같은 섹션 번호
+        if t in ("-", "—", "해당없음", "없음"):
             return True
-        if "신주의 종류와 수" in t:
+
+        # 섹션 번호/목차 숫자 차단
+        if re.match(r"^\d+\s*[\.\)]\s*", t):
             return True
+
+        # 제목 셀 자체 차단
+        if "신주의종류와수" in n:
+            return True
+
+        # 날짜 차단
+        if re.search(r"\d{4}[-./년]\s*\d{1,2}", t):
+            return True
+
         return False
 
-    for i, cell in enumerate(normed):
-        if any(kw in cell for kw in label_kws_norm):
-            # 라벨 오른쪽 값만 본다
-            for cand in cleaned[i + 1:]:
-                if _is_bad_candidate(cand):
-                    continue
-                v = _to_int(cand)
-                if v is not None and v >= 50:
-                    return v
+    def _extract_num_from_row_by_label(row_vals: List[str], label_kws: List[str]) -> Optional[int]:
+        cleaned = [normalize_text(x) for x in row_vals]
+        normed = [_norm(x) for x in cleaned]
+        label_kws_norm = [_norm(x) for x in label_kws]
 
-    return None
+        for i, cell in enumerate(normed):
+            if any(kw in cell for kw in label_kws_norm):
+                # 라벨 오른쪽 셀만 본다. 행 전체 fallback 제거
+                for cand in cleaned[i + 1:]:
+                    if _is_bad_share_candidate(cand):
+                        continue
+                    v = _to_int(cand)
+                    if v is not None and v >= 50:
+                        return v
+        return None
+
+    if corr_after:
+        for k, v in corr_after.items():
+            if _is_section1_heading(k):
+                txt = normalize_text(v)
+                common = None
+                other = None
+                total = None
+
+                m = re.search(r"보통주식\s*\(\s*주\s*\)\s*[:：]?\s*([0-9][0-9,]*)", txt)
+                if m:
+                    common = int(m.group(1).replace(",", ""))
+
+                m = re.search(r"(?:기타주식|종류주식|우선주식)\s*\(\s*주\s*\)\s*[:：]?\s*([0-9][0-9,]*)", txt)
+                if m:
+                    other = int(m.group(1).replace(",", ""))
+
+                m = re.search(r"(?:합계|총계|계)\s*[:：]?\s*([0-9][0-9,]*)", txt)
+                if m:
+                    total = int(m.group(1).replace(",", ""))
+
+                amt = total if total else (common or 0) + (other or 0)
+                if amt > 0:
+                    if other and not common:
+                        return amt, "우선주식"
+                    if common and not other:
+                        return amt, "보통주식"
+                    if common and other:
+                        return amt, "보통주식, 우선주식"
+                    return amt, "보통주식"
+
+    for df in dfs:
+        try:
+            arr = df.fillna("").astype(str).values
+        except Exception:
+            continue
+
+        R, C = arr.shape
+        for r in range(R):
+            row_list = arr[r].tolist()
+            first_cell = _first_nonempty_cell(row_list)
+            row_join = " ".join([normalize_text(x) for x in row_list if normalize_text(x)])
+
+            if not (_is_section1_heading(first_cell) or _is_section1_heading(row_join)):
+                continue
+
+            common = None
+            other = None
+            total = None
+            joined_txt = []
+
+            for rr in range(r, min(r + 8, R)):
+                next_row = [normalize_text(x) for x in arr[rr].tolist()]
+                next_first = _first_nonempty_cell(next_row)
+
+                if rr > r and _is_new_top_heading(next_first):
+                    break
+
+                row_text = " ".join([x for x in next_row if x])
+                if row_text:
+                    joined_txt.append(row_text)
+
+                if common is None:
+                    common = _extract_num_from_row_by_label(next_row, ["보통주식", "보통주"])
+
+                if other is None:
+                    other = _extract_num_from_row_by_label(
+                        next_row,
+                        ["기타주식", "종류주식", "우선주식", "기타주", "종류주", "우선주"],
+                    )
+
+                if total is None:
+                    total = _extract_num_from_row_by_label(next_row, ["합계", "총계", "계"])
+
+            amt = total if total else (common or 0) + (other or 0)
+            if amt > 0:
+                if other and not common:
+                    return amt, "우선주식"
+                if common and not other:
+                    return amt, "보통주식"
+                if common and other:
+                    return amt, "보통주식, 우선주식"
+
+                joined_norm = _norm(" ".join(joined_txt))
+                if "우선" in joined_norm or "종류" in joined_norm or "기타" in joined_norm:
+                    return amt, "보통주식, 우선주식" if "보통" in joined_norm else "우선주식"
+                return amt, "보통주식"
+
+    return None, ""
 
     if corr_after:
         for k, v in corr_after.items():
@@ -1188,6 +1289,13 @@ def choose_issue_shares_and_type(
 ) -> Tuple[Optional[int], str]:
     old_amt, old_type = extract_issue_shares_and_type(dfs, corr_after)
     new_amt, new_type = extract_issue_shares_and_type_section1_exact(dfs, corr_after)
+
+    # new가 1, 2 같은 비정상 소수값이면 old 우선
+    if old_amt and new_amt:
+        if new_amt < 50 <= old_amt:
+            return old_amt, (old_type or new_type or "보통주식")
+        if old_amt >= 100 and new_amt <= 5:
+            return old_amt, (old_type or new_type or "보통주식")
 
     if old_amt and not new_amt:
         return old_amt, old_type
