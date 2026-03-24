@@ -3193,11 +3193,11 @@ def parse_rights_record(rec: Dict[str, Any]):
     amount_won = None
     if new_shares is not None and price_val is not None:
         amount_won = int(round(new_shares * price_val))
-
+    
     # 계산 실패 시에만 4. 자금조달의 목적 합계 사용
     if amount_won is None and use_total is not None:
         amount_won = int(use_total)
-
+    
     if amount_won is not None:
         row["확정발행금액(억원)"] = fmt_eok_from_won(amount_won)
 
