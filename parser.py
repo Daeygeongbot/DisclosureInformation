@@ -674,6 +674,21 @@ def scan_label_value_preferring_correction(
     return scan_label_value(dfs, label_candidates)
 
 
+def _normalize_bond_method_value(text: str) -> str:
+    t = normalize_text(text)
+    if not t:
+        return ""
+
+    if "사모" in t and "공모" not in t:
+        return "사모"
+    if "공모" in t and "사모" not in t:
+        return "공모"
+    if "제3자" in t and "배정" in t:
+        return "제3자배정"
+
+    return ""
+
+
 def find_row_best_int(
     dfs: List[pd.DataFrame],
     must_contain: List[str],
@@ -2901,31 +2916,30 @@ def extract_bond_method_from_section8(
 ) -> str:
     """
     모집방식은 반드시 '8. 사채발행방법'에서만 추출
+    최종 반환값은 사모 / 공모 / 제3자배정만 허용
     """
     section_labels = ["사채발행방법", "모집방법", "모집방식", "발행방법"]
 
+    # 1) 정정맵에서 "8번 섹션"만 인정
     if corr_after:
         for k, v in corr_after.items():
             if _is_numbered_section_heading(k, 8, section_labels):
-                val = _clean_section_value_text(v, section_labels)
-                if val:
-                    return val
+                method = _normalize_bond_method_value(v)
+                if method:
+                    return method
 
-        for k, v in corr_after.items():
-            k_n = _norm(k)
-            if any(_norm(lb) in k_n for lb in section_labels):
-                val = _clean_section_value_text(v, section_labels)
-                if val:
-                    if "사모" in val and "공모" not in val:
-                        return "사모"
-                    if "공모" in val and "사모" not in val:
-                        return "공모"
-                    return val
-
+    # 2) 실제 8번 섹션 블록만 확인
     block_rows = _get_section_block_rows(dfs, 8, section_labels, max_rows=6)
-    val = _extract_text_from_block_rows(block_rows, section_labels)
-    if val:
-        return val
+    if block_rows:
+        block_text = " ".join(
+            [
+                " ".join([normalize_text(x) for x in row if normalize_text(x)])
+                for row in block_rows
+            ]
+        )
+        method = _normalize_bond_method_value(block_text)
+        if method:
+            return method
 
     return ""
 
@@ -3297,11 +3311,15 @@ def parse_bond_record(rec: Dict[str, Any]):
     row["납입일"] = extract_payment_date_bond(tables, corr_after)
 
     exact_method = extract_bond_method_from_section8(tables, corr_after)
-    row["모집방식"] = exact_method or scan_label_value_preferring_correction(
-        tables,
-        ["사채발행방법", "모집방법", "모집방식", "발행방법", "공모여부"],
-        corr_after,
-    )
+    row["모집방식"] = exact_method
+    
+    if not row["모집방식"]:
+        fallback_val = scan_label_value_preferring_correction(
+            tables,
+            ["사채발행방법", "모집방법", "모집방식", "발행방법", "공모여부"],
+            corr_after,
+        )
+        row["모집방식"] = _normalize_bond_method_value(fallback_val)
 
     row["발행상품"] = extract_product_type_bond(tables, corr_after, title)
 
