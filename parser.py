@@ -3224,7 +3224,7 @@ def parse_rights_record(rec: Dict[str, Any]):
         return row, missing, suspicious
     
     
-    def parse_bond_record(rec: Dict[str, Any]):
+def parse_bond_record(rec: Dict[str, Any]):
 
     if new_shares is not None and pre_shares not in (None, 0):
         row["증자비율"] = f"{(new_shares / pre_shares) * 100:.2f}%"
