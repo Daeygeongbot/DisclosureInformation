@@ -361,15 +361,17 @@ def is_correction_title(title: str) -> bool:
 
 def normalize_market_value(value: Any) -> str:
     s = normalize_text(value)
-    n = _norm(s)
     if not s:
         return ""
+
+    n = _norm(s)
+    n_low = n.lower()
 
     if (
         "코스닥" in s
         or "코스닥시장" in s
         or "[코]" in s
-        or "KOSDAQ" in s.upper()
+        or "kosdaq" in n_low
         or n in ["코", "코스닥", "코스닥시장"]
     ):
         return "코스닥"
@@ -379,7 +381,7 @@ def normalize_market_value(value: Any) -> str:
         or "유가증권시장" in s
         or "코스피" in s
         or "[유]" in s
-        or "KOSPI" in s.upper()
+        or "kospi" in n_low
         or n in ["유", "유가증권", "유가증권시장", "코스피"]
     ):
         return "유가증권"
@@ -387,10 +389,12 @@ def normalize_market_value(value: Any) -> str:
     if (
         "코넥스" in s
         or "코넥스시장" in s
-        or "[코넥스]" in s
+        or "코넥스 상장" in s
+        or "konex" in n_low
         or "[넥]" in s
-        or "KONEX" in s.upper()
-        or n in ["넥", "코넥스", "코넥스시장", "konex"]
+        or "[코넥]" in s
+        or "[코넥스]" in s
+        or n in ["넥", "코넥", "코넥스", "코넥스시장"]
     ):
         return "코넥스"
 
@@ -401,7 +405,16 @@ def normalize_market_value(value: Any) -> str:
 
 
 def detect_market_from_title(title: str) -> str:
-    return normalize_market_value(title)
+    t = normalize_text(title)
+
+    if re.match(r"^\[(유|KOSPI)\]", t, flags=re.IGNORECASE):
+        return "유가증권"
+    if re.match(r"^\[(코|KOSDAQ)\]", t, flags=re.IGNORECASE):
+        return "코스닥"
+    if re.match(r"^\[(넥|코넥|코넥스|KONEX)\]", t, flags=re.IGNORECASE):
+        return "코넥스"
+
+    return normalize_market_value(t)
 
 
 def detect_report_family(title: str) -> str:
