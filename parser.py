@@ -3222,31 +3222,6 @@ def parse_rights_record(rec: Dict[str, Any]):
             suspicious.append("보고서명")
     
         return row, missing, suspicious
-    
-    
-def parse_bond_record(rec: Dict[str, Any]):
-
-    if new_shares is not None and pre_shares not in (None, 0):
-        row["증자비율"] = f"{(new_shares / pre_shares) * 100:.2f}%"
-
-    for h in RIGHTS_HEADERS:
-        if h in ["링크", "접수번호"]:
-            continue
-        if not normalize_text(row[h]):
-            missing.append(h)
-
-    if row["회사명"] in ["유", "코", "넥"]:
-        suspicious.append("회사명")
-    if price_val is not None and price_val <= 50:
-        suspicious.append("확정발행가(원)")
-    if base_price is not None and base_price <= 50:
-        suspicious.append("기준주가")
-    if row["투자자"] and any(x in row["투자자"] for x in ["관계", "지분", "합계", "소계", "정정", "출자자수", "명"]):
-        suspicious.append("투자자")
-    if row["보고서명"] and len(row["보고서명"]) < 5:
-        suspicious.append("보고서명")
-
-    return row, missing, suspicious
 
 
 def parse_bond_record(rec: Dict[str, Any]):
