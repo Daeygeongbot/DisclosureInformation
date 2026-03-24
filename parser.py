@@ -3176,53 +3176,55 @@ def parse_rights_record(rec: Dict[str, Any]):
     if disc is not None:
         row["할인(할증률)"] = f"{disc:g}%"
 
-    use_text, use_total = extract_fund_use_and_amount(tables, corr_after)
-    row["자금용도"] = use_text
-    row["투자자"] = extract_investors_rights(tables, corr_after)
-    row["링크"] = rec["src_url"]
-    row["접수번호"] = rec["acpt_no"]
-
-    if not row["발행상품"] and row["신규발행주식수"]:
-        row["발행상품"] = "보통주식"
-
-    new_shares = parse_float_like(row["신규발행주식수"])
-    price_val = parse_float_like(row["확정발행가(원)"])
-    pre_shares = parse_float_like(row["증자전 주식수"])
-
-    # 확정발행금액(억원): 기존 계산 로직 우선
-    calc_amount_won = None
-    if new_shares is not None and price_val is not None:
-        calc_amount_won = int(round(new_shares * price_val))
+        use_text, use_total = extract_fund_use_and_amount(tables, corr_after)
+        row["자금용도"] = use_text
+        row["투자자"] = extract_investors_rights(tables, corr_after)
+        row["링크"] = rec["src_url"]
+        row["접수번호"] = rec["acpt_no"]
     
-    purpose_amount_won = int(use_total) if use_total is not None else None
+        if not row["발행상품"] and row["신규발행주식수"]:
+            row["발행상품"] = "보통주식"
     
-    final_amount_won = None
+        new_shares = parse_float_like(row["신규발행주식수"])
+        price_val = parse_float_like(row["확정발행가(원)"])
+        pre_shares = parse_float_like(row["증자전 주식수"])
     
-    if calc_amount_won is None and purpose_amount_won is None:
-        final_amount_won = None
+        # 확정발행금액(억원): 기존 계산 로직 우선
+        amount_won = None
+        if new_shares is not None and price_val is not None:
+            amount_won = int(round(new_shares * price_val))
     
-    elif calc_amount_won is not None and purpose_amount_won is None:
-        final_amount_won = calc_amount_won
+        # 계산 실패 시에만 4. 자금조달의 목적 합계 사용
+        if amount_won is None and use_total is not None:
+            amount_won = int(use_total)
     
-    elif calc_amount_won is None and purpose_amount_won is not None:
-        final_amount_won = purpose_amount_won
+        if amount_won is not None:
+            row["확정발행금액(억원)"] = fmt_eok_from_won(amount_won)
     
-    else:
-        # 신규발행주식수가 너무 작으면 계산값 불신
-        if new_shares is None or new_shares < 50:
-            final_amount_won = purpose_amount_won
+        if new_shares is not None and pre_shares not in (None, 0):
+            row["증자비율"] = f"{(new_shares / pre_shares) * 100:.2f}%"
     
-        # 계산값과 자금조달 목적 금액이 너무 다르면 자금조달 금액 우선
-        elif calc_amount_won < purpose_amount_won * 0.5 or calc_amount_won > purpose_amount_won * 1.5:
-            final_amount_won = purpose_amount_won
+        for h in RIGHTS_HEADERS:
+            if h in ["링크", "접수번호"]:
+                continue
+            if not normalize_text(row[h]):
+                missing.append(h)
     
-        else:
-            final_amount_won = calc_amount_won
+        if row["회사명"] in ["유", "코", "넥"]:
+            suspicious.append("회사명")
+        if price_val is not None and price_val <= 50:
+            suspicious.append("확정발행가(원)")
+        if base_price is not None and base_price <= 50:
+            suspicious.append("기준주가")
+        if row["투자자"] and any(x in row["투자자"] for x in ["관계", "지분", "합계", "소계", "정정", "출자자수", "명"]):
+            suspicious.append("투자자")
+        if row["보고서명"] and len(row["보고서명"]) < 5:
+            suspicious.append("보고서명")
     
-    if final_amount_won is not None:
-        row["확정발행금액(억원)"] = fmt_eok_from_won(final_amount_won)
-    else:
-        row["확정발행금액(억원)"] = ""
+        return row, missing, suspicious
+    
+    
+    def parse_bond_record(rec: Dict[str, Any]):
 
     if new_shares is not None and pre_shares not in (None, 0):
         row["증자비율"] = f"{(new_shares / pre_shares) * 100:.2f}%"
