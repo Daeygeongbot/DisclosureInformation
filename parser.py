@@ -3191,38 +3191,38 @@ def parse_rights_record(rec: Dict[str, Any]):
 
     # 확정발행금액(억원): 기존 계산 로직 우선
     calc_amount_won = None
-if new_shares is not None and price_val is not None:
-    calc_amount_won = int(round(new_shares * price_val))
-
-purpose_amount_won = int(use_total) if use_total is not None else None
-
-final_amount_won = None
-
-if calc_amount_won is None and purpose_amount_won is None:
+    if new_shares is not None and price_val is not None:
+        calc_amount_won = int(round(new_shares * price_val))
+    
+    purpose_amount_won = int(use_total) if use_total is not None else None
+    
     final_amount_won = None
-
-elif calc_amount_won is not None and purpose_amount_won is None:
-    final_amount_won = calc_amount_won
-
-elif calc_amount_won is None and purpose_amount_won is not None:
-    final_amount_won = purpose_amount_won
-
-else:
-    # 신규발행주식수가 너무 작으면 계산값 불신
-    if new_shares is None or new_shares < 50:
-        final_amount_won = purpose_amount_won
-
-    # 계산값과 자금조달 목적 금액이 너무 다르면 자금조달 금액 우선
-    elif calc_amount_won < purpose_amount_won * 0.5 or calc_amount_won > purpose_amount_won * 1.5:
-        final_amount_won = purpose_amount_won
-
-    else:
+    
+    if calc_amount_won is None and purpose_amount_won is None:
+        final_amount_won = None
+    
+    elif calc_amount_won is not None and purpose_amount_won is None:
         final_amount_won = calc_amount_won
-
-if final_amount_won is not None:
-    row["확정발행금액(억원)"] = fmt_eok_from_won(final_amount_won)
-else:
-    row["확정발행금액(억원)"] = ""
+    
+    elif calc_amount_won is None and purpose_amount_won is not None:
+        final_amount_won = purpose_amount_won
+    
+    else:
+        # 신규발행주식수가 너무 작으면 계산값 불신
+        if new_shares is None or new_shares < 50:
+            final_amount_won = purpose_amount_won
+    
+        # 계산값과 자금조달 목적 금액이 너무 다르면 자금조달 금액 우선
+        elif calc_amount_won < purpose_amount_won * 0.5 or calc_amount_won > purpose_amount_won * 1.5:
+            final_amount_won = purpose_amount_won
+    
+        else:
+            final_amount_won = calc_amount_won
+    
+    if final_amount_won is not None:
+        row["확정발행금액(억원)"] = fmt_eok_from_won(final_amount_won)
+    else:
+        row["확정발행금액(억원)"] = ""
 
     if new_shares is not None and pre_shares not in (None, 0):
         row["증자비율"] = f"{(new_shares / pre_shares) * 100:.2f}%"
