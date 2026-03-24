@@ -1768,7 +1768,6 @@ def get_price_by_exact_section(
 
     return None
 
-
 def extract_fund_use_and_amount(
     dfs: List[pd.DataFrame],
     corr_after: Dict[str, str],
@@ -1816,7 +1815,7 @@ def extract_fund_use_and_amount(
                 vals.append(amt)
         return vals
 
-    def _scan_rows(rows: List[List[str]]):
+    def _scan_rows(rows: List[List[str]]) -> Optional[int]:
         block_total = None
 
         for row in rows:
@@ -1829,14 +1828,14 @@ def extract_fund_use_and_amount(
                     if valid_amts:
                         found_amts[std_name] = valid_amts[-1]
 
-            if any(x in row_joined for x in ["합계", "총계"]):
+            if "합계" in row_joined or "총계" in row_joined:
                 valid_amts = _collect_valid_amts(cleaned)
                 if valid_amts:
                     block_total = valid_amts[-1]
 
         return block_total
 
-    # 1) 정정공시 우선
+    # 정정값 우선 반영
     if corr_after:
         for itemk, v in corr_after.items():
             itemk_norm = _norm(itemk)
@@ -1846,9 +1845,9 @@ def extract_fund_use_and_amount(
                     if amt and amt >= 100:
                         found_amts[std_name] = amt
 
-    # 2) 4. 자금조달의 목적 섹션 우선 스캔
     direct_total = None
 
+    # 4. 자금조달의 목적 블록 우선 스캔
     for df in dfs:
         try:
             arr = df.fillna("").astype(str).values
@@ -1878,7 +1877,7 @@ def extract_fund_use_and_amount(
             if section_total is not None and section_total >= 100:
                 direct_total = section_total
 
-    # 3) 전체 테이블 fallback
+    # 블록 안에서 합계 못 찾았으면 전체 스캔 fallback
     for df in dfs:
         try:
             arr = df.fillna("").astype(str).values
@@ -3188,19 +3187,42 @@ def parse_rights_record(rec: Dict[str, Any]):
     new_shares = parse_float_like(row["신규발행주식수"])
     price_val = parse_float_like(row["확정발행가(원)"])
     pre_shares = parse_float_like(row["증자전 주식수"])
-
-    # 확정발행금액(억원): 기존 계산 로직 우선
-    amount_won = None
+    
+    calc_amount_won = None
     if new_shares is not None and price_val is not None:
-        amount_won = int(round(new_shares * price_val))
+        calc_amount_won = int(round(new_shares * price_val))
     
-    # 계산 실패 시에만 4. 자금조달의 목적 합계 사용
-    if amount_won is None and use_total is not None:
-        amount_won = int(use_total)
+    purpose_amount_won = int(use_total) if use_total is not None else None
     
-    if amount_won is not None:
-        row["확정발행금액(억원)"] = fmt_eok_from_won(amount_won)
-
+    final_amount_won = None
+    
+    if calc_amount_won is None and purpose_amount_won is None:
+        final_amount_won = None
+    
+    elif calc_amount_won is not None and purpose_amount_won is None:
+        final_amount_won = calc_amount_won
+    
+    elif calc_amount_won is None and purpose_amount_won is not None:
+        final_amount_won = purpose_amount_won
+    
+    else:
+        # 신규발행주식수가 너무 작으면 계산값 불신
+        if new_shares is None or new_shares < 50:
+            final_amount_won = purpose_amount_won
+    
+        # 계산값과 4번 섹션 금액 차이가 너무 크면 4번 금액 우선
+        elif calc_amount_won < purpose_amount_won * 0.5 or calc_amount_won > purpose_amount_won * 1.5:
+            final_amount_won = purpose_amount_won
+    
+        else:
+            final_amount_won = calc_amount_won
+    
+    # 반드시 명시적으로 써줘야 기존 오염값이 지워짐
+    if final_amount_won is not None:
+        row["확정발행금액(억원)"] = fmt_eok_from_won(final_amount_won)
+    else:
+        row["확정발행금액(억원)"] = ""
+    
     if new_shares is not None and pre_shares not in (None, 0):
         row["증자비율"] = f"{(new_shares / pre_shares) * 100:.2f}%"
 
