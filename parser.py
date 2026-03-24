@@ -1785,39 +1785,130 @@ def extract_fund_use_and_amount(
     }
     found_amts: Dict[str, int] = {}
 
+    def _first_nonempty_cell(row_vals) -> str:
+        for x in row_vals:
+            s = normalize_text(x)
+            if s:
+                return s
+        return ""
+
+    def _is_section4_heading(text: str) -> bool:
+        raw = normalize_text(text)
+        n = _norm(raw)
+        if not raw:
+            return False
+        return (
+            bool(re.match(r"^4[\.\)]?\s*자금조달의목적$", n))
+            or "4자금조달의목적" in n
+        )
+
+    def _is_new_top_heading(text: str) -> bool:
+        raw = normalize_text(text)
+        if not raw:
+            return False
+        return bool(re.match(r"^\d+\s*[\.\)]\s*[가-힣A-Za-z]", raw))
+
+    def _collect_valid_amts(row: List[str]) -> List[int]:
+        vals = []
+        for cell in row:
+            amt = _max_int_in_text(cell)
+            if amt is not None and amt >= 100:
+                vals.append(amt)
+        return vals
+
+    def _scan_rows(rows: List[List[str]]):
+        block_total = None
+
+        for row in rows:
+            cleaned = [normalize_text(x) for x in row]
+            row_joined = _norm("".join(cleaned))
+
+            for k, std_name in keys_map.items():
+                if _norm(k) in row_joined:
+                    valid_amts = _collect_valid_amts(cleaned)
+                    if valid_amts:
+                        found_amts[std_name] = valid_amts[-1]
+
+            if any(x in row_joined for x in ["합계", "총계"]):
+                valid_amts = _collect_valid_amts(cleaned)
+                if valid_amts:
+                    block_total = valid_amts[-1]
+
+        return block_total
+
+    # 1) 정정공시 우선
     if corr_after:
         for itemk, v in corr_after.items():
+            itemk_norm = _norm(itemk)
             for k, std_name in keys_map.items():
-                if _norm(k) in itemk:
+                if _norm(k) in itemk_norm:
                     amt = _max_int_in_text(v)
                     if amt and amt >= 100:
                         found_amts[std_name] = amt
 
+    # 2) 4. 자금조달의 목적 섹션 우선 스캔
+    direct_total = None
+
     for df in dfs:
         try:
-            arr = df.astype(str).values
+            arr = df.fillna("").astype(str).values
+        except Exception:
+            continue
+
+        R, C = arr.shape
+        for r in range(R):
+            row_list = arr[r].tolist()
+            first_cell = _first_nonempty_cell(row_list)
+            row_join = " ".join([normalize_text(x) for x in row_list if normalize_text(x)])
+
+            if not (_is_section4_heading(first_cell) or _is_section4_heading(row_join)):
+                continue
+
+            block_rows = []
+            for rr in range(r, min(r + 12, R)):
+                next_row = [normalize_text(x) for x in arr[rr].tolist()]
+                next_first = _first_nonempty_cell(next_row)
+
+                if rr > r and _is_new_top_heading(next_first):
+                    break
+
+                block_rows.append(next_row)
+
+            section_total = _scan_rows(block_rows)
+            if section_total is not None and section_total >= 100:
+                direct_total = section_total
+
+    # 3) 전체 테이블 fallback
+    for df in dfs:
+        try:
+            arr = df.fillna("").astype(str).values
         except Exception:
             continue
 
         for r in range(arr.shape[0]):
-            row = [str(x).strip() for x in arr[r].tolist()]
+            row = [normalize_text(x) for x in arr[r].tolist()]
             row_joined = _norm("".join(row))
+
             for k, std_name in keys_map.items():
                 if _norm(k) in row_joined:
-                    valid_amts = []
-                    for cell in row:
-                        amt = _max_int_in_text(cell)
-                        if amt is not None and amt >= 100:
-                            valid_amts.append(amt)
+                    valid_amts = _collect_valid_amts(row)
                     if valid_amts:
                         found_amts[std_name] = valid_amts[-1]
 
-    std_order = ["시설자금", "영업양수자금", "운영자금", "채무상환자금", "타법인 증권 취득자금", "취득자금", "기타자금"]
+    std_order = [
+        "시설자금",
+        "영업양수자금",
+        "운영자금",
+        "채무상환자금",
+        "타법인 증권 취득자금",
+        "취득자금",
+        "기타자금",
+    ]
     uses = [name for name in std_order if found_amts.get(name, 0) > 0]
     total_sum = sum(found_amts.get(name, 0) for name in uses)
 
-    return ", ".join(uses), (total_sum if total_sum > 0 else None)
-
+    final_total = direct_total if direct_total not in (None, 0) else (total_sum if total_sum > 0 else None)
+    return ", ".join(uses), final_total
 
 def extract_investors_rights(dfs: List[pd.DataFrame], corr_after: Dict[str, str]) -> str:
     investors = []
@@ -3098,8 +3189,17 @@ def parse_rights_record(rec: Dict[str, Any]):
     price_val = parse_float_like(row["확정발행가(원)"])
     pre_shares = parse_float_like(row["증자전 주식수"])
 
+    # 확정발행금액(억원): 기존 계산 로직 우선
+    amount_won = None
     if new_shares is not None and price_val is not None:
-        row["확정발행금액(억원)"] = fmt_eok_from_won(new_shares * price_val)
+        amount_won = int(round(new_shares * price_val))
+    
+    # 계산 실패 시에만 4. 자금조달의 목적 합계 사용
+    if amount_won is None and use_total is not None:
+        amount_won = int(use_total)
+    
+    if amount_won is not None:
+        row["확정발행금액(억원)"] = fmt_eok_from_won(amount_won)
 
     if new_shares is not None and pre_shares not in (None, 0):
         row["증자비율"] = f"{(new_shares / pre_shares) * 100:.2f}%"
