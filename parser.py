@@ -737,6 +737,98 @@ def find_row_best_float(dfs: List[pd.DataFrame], must_contain: List[str]) -> Opt
 
     return None
 
+def get_bond_price_labels(bond_kind: str) -> List[str]:
+    kind = (bond_kind or "").upper().strip()
+
+    if kind == "CB":
+        return ["전환가액(원/주)", "전환가액"]
+
+    if kind == "EB":
+        return ["교환가액(원/주)", "교환가액"]
+
+    if kind == "BW":
+        return ["권리행사가액(원/주)", "행사가액(원/주)", "권리행사가액", "행사가액"]
+
+    return [
+        "전환가액(원/주)", "교환가액(원/주)", "행사가액(원/주)", "권리행사가액(원/주)",
+        "전환가액", "교환가액", "행사가액", "권리행사가액",
+    ]
+
+
+def _extract_price_right_only_from_row(
+    row_vals: List[str],
+    label_keywords: List[str],
+    min_val: int = 50,
+    max_val: int = 50000000,
+) -> Optional[int]:
+    cleaned = [normalize_text(x) for x in row_vals]
+    normed = [_norm(x) for x in cleaned]
+    label_norms = [_norm(x) for x in label_keywords]
+
+    for i, cell in enumerate(normed):
+        if any(lb in cell for lb in label_norms):
+            # 라벨 오른쪽 값만 확인
+            for cand in cleaned[i + 1:]:
+                if not cand:
+                    continue
+
+                v = _to_int(cand)
+                if v is not None and min_val <= v <= max_val:
+                    return v
+
+                nums = re.findall(r"\d{1,3}(?:,\d{3})+|\d+", cand)
+                for x in nums:
+                    vv = int(x.replace(",", ""))
+                    if min_val <= vv <= max_val:
+                        return vv
+
+            # 같은 셀 안에 "전환가액 1,051원" 같이 붙은 경우만 허용
+            nums = re.findall(r"\d{1,3}(?:,\d{3})+|\d+", cleaned[i])
+            for x in nums:
+                vv = int(x.replace(",", ""))
+                if min_val <= vv <= max_val:
+                    return vv
+
+    return None
+
+
+def extract_bond_strike_price_exact(
+    dfs: List[pd.DataFrame],
+    corr_after: Dict[str, str],
+    bond_kind: str,
+) -> Optional[int]:
+    price_labels = get_bond_price_labels(bond_kind)
+
+    # 1) 정정맵 우선
+    if corr_after:
+        for k, v in corr_after.items():
+            k_n = _norm(k)
+            if any(_norm(lb) in k_n for lb in price_labels):
+                num = _to_int(v)
+                if num is not None and 50 <= num <= 50000000:
+                    return num
+
+                nums = re.findall(r"\d{1,3}(?:,\d{3})+|\d+", str(v))
+                for x in nums:
+                    vv = int(x.replace(",", ""))
+                    if 50 <= vv <= 50000000:
+                        return vv
+
+    # 2) 테이블 row scan
+    for df in dfs:
+        try:
+            arr = df.fillna("").astype(str).values
+        except Exception:
+            continue
+
+        for r in range(arr.shape[0]):
+            row = arr[r].tolist()
+            num = _extract_price_right_only_from_row(row, price_labels, 50, 50000000)
+            if num is not None:
+                return num
+
+    return None
+
 
 def get_valid_date_by_labels(
     dfs: List[pd.DataFrame],
@@ -3323,11 +3415,12 @@ def parse_bond_record(rec: Dict[str, Any]):
 
     row["발행상품"] = extract_product_type_bond(tables, corr_after, title)
 
-    row["행사(전환)가액(원)"] = get_corr_num(
-        ["전환가액(원/주)", "교환가액(원/주)", "행사가액(원/주)", "권리행사가액(원/주)", "전환가액", "교환가액", "행사가액", "권리행사가액"],
-        ["가액", "원"],
-        50,
+    exact_strike_price = extract_bond_strike_price_exact(
+        tables,
+        corr_after,
+        row["구분"],
     )
+    row["행사(전환)가액(원)"] = fmt_number(exact_strike_price) if exact_strike_price else ""
 
     exact_share_cnt, exact_share_ratio = extract_bond_shares_and_ratio_from_section9(
         tables,
