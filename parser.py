@@ -1065,26 +1065,32 @@ def extract_issue_shares_and_type_section1_exact(
             return False
         return bool(re.match(r"^\d+\s*[\.\)]\s*[가-힣A-Za-z]", raw))
 
-    def _extract_num_from_row_by_label(row_vals: List[str], label_kws: List[str]) -> Optional[int]:
-        cleaned = [normalize_text(x) for x in row_vals]
-        normed = [_norm(x) for x in cleaned]
+def _extract_num_from_row_by_label(row_vals: List[str], label_kws: List[str]) -> Optional[int]:
+    cleaned = [normalize_text(x) for x in row_vals]
+    normed = [_norm(x) for x in cleaned]
+    label_kws_norm = [_norm(x) for x in label_kws]
 
-        label_kws_norm = [_norm(x) for x in label_kws]
+    def _is_bad_candidate(s: str) -> bool:
+        t = normalize_text(s)
+        if not t or t == "-":
+            return True
+        if re.match(r"^\d+\s*[\.\)]", t):   # 1. / 2) 같은 섹션 번호
+            return True
+        if "신주의 종류와 수" in t:
+            return True
+        return False
 
-        for i, cell in enumerate(normed):
-            if any(kw in cell for kw in label_kws_norm):
-                for cand in cleaned[i + 1:]:
-                    v = _to_int(cand)
-                    if v is not None and v > 0:
-                        return v
+    for i, cell in enumerate(normed):
+        if any(kw in cell for kw in label_kws_norm):
+            # 라벨 오른쪽 값만 본다
+            for cand in cleaned[i + 1:]:
+                if _is_bad_candidate(cand):
+                    continue
+                v = _to_int(cand)
+                if v is not None and v >= 50:
+                    return v
 
-                for j, cand in enumerate(cleaned):
-                    if j == i:
-                        continue
-                    v = _to_int(cand)
-                    if v is not None and v > 0:
-                        return v
-        return None
+    return None
 
     if corr_after:
         for k, v in corr_after.items():
