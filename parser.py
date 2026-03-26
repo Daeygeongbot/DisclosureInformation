@@ -2943,6 +2943,87 @@ def extract_bond_method_from_section8(
 
     return ""
 
+def extract_bond_strike_price_from_section9(
+    dfs: List[pd.DataFrame],
+    corr_after: Dict[str, str],
+    bond_kind: str,
+) -> str:
+    """
+    행사(전환)가액은 반드시 9. 전환/교환/권리행사에 관한 사항 섹션에서만 추출
+    """
+
+    if bond_kind == "CB":
+        section_titles = ["전환에 관한 사항"]
+        price_labels = ["전환가액(원/주)", "전환가액"]
+    elif bond_kind == "EB":
+        section_titles = ["교환에 관한 사항"]
+        price_labels = ["교환가액(원/주)", "교환가액"]
+    else:
+        section_titles = ["권리행사에 관한 사항", "신주인수권에 관한 사항"]
+        price_labels = ["권리행사가액(원/주)", "행사가액(원/주)", "권리행사가액", "행사가액"]
+
+    price_label_norms = [_norm(x) for x in price_labels]
+
+    def _valid_price(v: Optional[int]) -> bool:
+        return v is not None and 50 <= v <= 100000000
+
+    def _extract_from_text(text: str) -> Optional[int]:
+        if not text:
+            return None
+        txt = normalize_text(text)
+
+        for label in price_labels:
+            pat = rf"{re.escape(label)}\s*[:：]?\s*([0-9][0-9,]*)"
+            m = re.search(pat, txt)
+            if m:
+                try:
+                    v = int(m.group(1).replace(",", ""))
+                    if _valid_price(v):
+                        return v
+                except Exception:
+                    pass
+
+        return None
+
+    # 1) 정정맵에서 9번 섹션만 인정
+    if corr_after:
+        for k, v in corr_after.items():
+            if _is_numbered_section_heading(k, 9, section_titles):
+                num = _extract_from_text(str(v))
+                if _valid_price(num):
+                    return f"{num:,}"
+
+    # 2) 실제 9번 섹션 블록만 확인
+    block_rows = _get_section_block_rows(dfs, 9, section_titles, max_rows=10)
+    if block_rows:
+        for row in block_rows:
+            cleaned = [normalize_text(x) for x in row if normalize_text(x)]
+            normed = [_norm(x) for x in cleaned]
+
+            for i, cell in enumerate(normed):
+                if any(lb in cell for lb in price_label_norms):
+                    # 라벨 오른쪽 셀 우선
+                    for cand in cleaned[i + 1:]:
+                        v = _to_int(cand)
+                        if _valid_price(v):
+                            return f"{v:,}"
+
+                    # 같은 셀 안에 라벨+숫자 같이 있을 때
+                    v = _max_int_in_text(cleaned[i])
+                    if _valid_price(v):
+                        return f"{v:,}"
+
+        block_text = " ".join(
+            [
+                " ".join([normalize_text(x) for x in row if normalize_text(x)])
+                for row in block_rows
+            ]
+        )
+        num = _extract_from_text(block_text)
+        if _valid_price(num):
+            return f"{num:,}"
+
+    return ""
 
 def extract_bond_shares_and_ratio_from_section9(
     dfs: List[pd.DataFrame],
@@ -3322,10 +3403,15 @@ def parse_bond_record(rec: Dict[str, Any]):
         row["모집방식"] = _normalize_bond_method_value(fallback_val)
 
     row["발행상품"] = extract_product_type_bond(tables, corr_after, title)
-
-    row["행사(전환)가액(원)"] = get_corr_num(
+    
+    exact_strike_price = extract_bond_strike_price_from_section9(
+        tables,
+        corr_after,
+        row["구분"],
+    )
+    row["행사(전환)가액(원)"] = exact_strike_price or get_corr_num(
         ["전환가액(원/주)", "교환가액(원/주)", "행사가액(원/주)", "권리행사가액(원/주)", "전환가액", "교환가액", "행사가액", "권리행사가액"],
-        ["가액", "원"],
+        [],
         50,
     )
 
@@ -3380,6 +3466,13 @@ def parse_bond_record(rec: Dict[str, Any]):
     row["자금용도"] = extract_fund_usage_bond(tables, corr_after)
     row["링크"] = rec["src_url"]
     row["접수번호"] = rec["acpt_no"]
+
+    strike_price_num = parse_float_like(row["행사(전환)가액(원)"])
+    if strike_price_num is not None:
+        if strike_price_num < 50 or strike_price_num > 100000000:
+            suspicious.append("행사(전환)가액(원)")
+            if strike_price_num > 100000000:
+                row["행사(전환)가액(원)"] = ""
 
     for h in BOND_HEADERS:
         if h in ["링크", "접수번호"]:
