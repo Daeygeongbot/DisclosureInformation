@@ -3406,20 +3406,27 @@ def parse_bond_record(rec: Dict[str, Any]):
 
     row["발행상품"] = extract_product_type_bond(tables, corr_after, title)
 
+    if row["구분"] == "CB":
+        price_labels = ["전환가액(원/주)", "전환가액(원)", "전환가액"]
+    elif row["구분"] == "EB":
+        price_labels = ["교환가액(원/주)", "교환가액(원)", "교환가액"]
+    else:  # BW
+        price_labels = [
+            "권리행사가액(원/주)",
+            "행사가액(원/주)",
+            "권리행사가액(원)",
+            "행사가액(원)",
+            "권리행사가액",
+            "행사가액",
+        ]
+
     exact_price = extract_bond_price_from_section9(
         tables,
         corr_after,
         row["구분"],
     )
-    
-    if exact_price:
-        row["행사(전환)가액(원)"] = exact_price
-    else:
-        row["행사(전환)가액(원)"] = get_corr_num(
-            price_labels,
-            [],   # broad fallback 제거
-            50,
-        )
+
+    row["행사(전환)가액(원)"] = exact_price
 
     price_num = parse_float_like(row["행사(전환)가액(원)"])
     if price_num is not None:
