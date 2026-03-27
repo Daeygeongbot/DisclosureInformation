@@ -3449,15 +3449,25 @@ def parse_bond_record(rec: Dict[str, Any]):
         corr_after,
         row["구분"],
     )
-
-    row["행사(전환)가액(원)"] = exact_price
-
+    
+    fallback_price_raw = scan_label_value_preferring_correction(
+        tables,
+        price_labels,
+        corr_after,
+    )
+    fallback_price_num = _max_int_in_text(fallback_price_raw)
+    
+    row["행사(전환)가액(원)"] = first_nonempty(
+        exact_price,
+        fmt_number(fallback_price_num) if fallback_price_num else "",
+    )
+    
     price_num = parse_float_like(row["행사(전환)가액(원)"])
     if price_num is not None:
         if price_num < 50 or price_num > 100_000_000:
             row["행사(전환)가액(원)"] = ""
             suspicious.append("행사(전환)가액(원)")
-
+        
     exact_share_cnt, exact_share_ratio = extract_bond_shares_and_ratio_from_section9(
         tables,
         corr_after,
@@ -3594,7 +3604,7 @@ def upsert_structured_row(
     if target_row:
         if sheet_type == "bond":
             existing_row = ws.row_values(target_row)
-            preserve_cols = ["Put Option", "Call Option", "Call 비율", "YTC"]
+            preserve_cols = ["Put Option", "Call Option", "Call 비율", "YTC", "행사(전환)가액(원)"]
 
             for col in preserve_cols:
                 if col not in headers:
