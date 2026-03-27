@@ -2895,25 +2895,100 @@ def _extract_price_from_block_rows(
         return None
 
     label_norms = [_norm(x) for x in label_keywords]
+    cleaned_rows = [[normalize_text(x) for x in row] for row in block_rows]
 
-    for row in block_rows:
-        cleaned = [normalize_text(x) for x in row]
-        normed = [_norm(x) for x in cleaned]
+    def _valid_price(txt: Any) -> Optional[int]:
+        s = normalize_text(txt)
+        if not s:
+            return None
 
-        for i, cell in enumerate(normed):
+        # 가격이 아닌 것들 차단
+        if any(x in s for x in ["년", "월", "일", "%", "주식수", "비율", "권면총액", "총액"]):
+            return None
+        if s in ("정정전", "정정후", "변경전", "변경후", "-", "해당없음", "없음"):
+            return None
+
+        v = _to_int(s)
+        if v is None:
+            v = _max_int_in_text(s)
+
+        if v is not None and min_val <= v <= max_val:
+            return v
+        return None
+
+    # ------------------------------------------------------
+    # 1) 9번 섹션 안에 정정표(정정전/정정후)가 있으면
+    #    반드시 '정정후/변경후' 열을 우선 사용
+    # ------------------------------------------------------
+    for hr, row in enumerate(cleaned_rows):
+        row_norm = [_norm(x) for x in row]
+
+        has_before = any(("정정전" in x or "변경전" in x) for x in row_norm)
+        has_after = any(("정정후" in x or "변경후" in x) for x in row_norm)
+
+        if not (has_before and has_after):
+            continue
+
+        after_col = next(
+            (i for i, x in enumerate(row_norm) if "정정후" in x or "변경후" in x),
+            None,
+        )
+
+        if after_col is None:
+            continue
+
+        # 헤더 아래 행들 중 가격 라벨이 있는 행 찾기
+        for rr in range(hr + 1, len(cleaned_rows)):
+            curr = cleaned_rows[rr]
+            curr_norm = [_norm(x) for x in curr]
+
+            if not any(curr):
+                continue
+
+            # 다음 큰 제목 나오면 중단
+            first_cell = curr[0] if curr else ""
+            if rr > hr + 1 and re.match(r"^\d+\s*[\.\)]\s*[가-힣A-Za-z]", first_cell):
+                break
+
+            label_hit = any(
+                any(lb in cell for lb in label_norms)
+                for cell in curr_norm
+            )
+            if not label_hit:
+                continue
+
+            # 1-1. 정정후 열 값을 최우선
+            if after_col < len(curr):
+                v = _valid_price(curr[after_col])
+                if v is not None:
+                    return v
+
+            # 1-2. 정정후 열이 비었으면, 라벨 오른쪽 유효 숫자들 중 마지막 값 사용
+            vals = []
+            for cand in curr:
+                v = _valid_price(cand)
+                if v is not None:
+                    vals.append(v)
+            if vals:
+                return vals[-1]
+
+    # ------------------------------------------------------
+    # 2) 일반 표면(정정표가 아니면)
+    #    라벨 오른쪽 숫자 중 '첫 값'이 아니라 '마지막 값' 사용
+    # ------------------------------------------------------
+    for row in cleaned_rows:
+        row_norm = [_norm(x) for x in row]
+
+        for i, cell in enumerate(row_norm):
             if any(lb in cell for lb in label_norms):
-                # 가격은 반드시 라벨 오른쪽 셀만 확인
-                for cand in cleaned[i + 1:]:
-                    txt = normalize_text(cand)
+                vals = []
+                for cand in row[i + 1:]:
+                    v = _valid_price(cand)
+                    if v is not None:
+                        vals.append(v)
 
-                    if not txt:
-                        continue
-                    if any(x in txt for x in ["년", "월", "일", "%", "주식수", "비율", "권면총액", "총액"]):
-                        continue
-
-                    v = _to_int(txt)
-                    if v is not None and min_val <= v <= max_val:
-                        return v
+                if vals:
+                    return vals[-1]
 
     return None
 
@@ -2992,8 +3067,8 @@ def extract_bond_price_from_section9(
 ) -> str:
     """
     행사(전환)가액(원)은 실제 9번 섹션 블록에서만 추출
-    - corr_after 전역 스캔 금지
     - 다른 섹션 오염 방지용 strict mode
+    - 9번 섹션 내부 정정표가 있으면 정정후 열 우선
     """
 
     if bond_kind == "CB":
@@ -3009,6 +3084,8 @@ def extract_bond_price_from_section9(
             "행사가액(원/주)",
             "권리행사가액(원)",
             "행사가액(원)",
+            "권리행사가액",
+            "행사가액",
         ]
 
     block_rows = _get_section_block_rows(dfs, 9, section_titles, max_rows=12)
