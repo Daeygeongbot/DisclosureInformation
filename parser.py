@@ -3375,8 +3375,8 @@ def parse_bond_record(rec: Dict[str, Any]):
     )
 
     row["전환주식수"] = exact_share_cnt or get_corr_num(
-        share_count_labels,
-        [] if corr_after else share_fallback_keys,
+        ["전환에 따라 발행할 주식수", "전환에 따라 발행할 주식의 수", "전환주식수", "교환대상 주식수", "교환대상주식수", "행사주식수", "권리행사로 발행할 주식수", "주식수"],
+        ["주식수"],
         50,
     )
 
