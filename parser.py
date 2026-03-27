@@ -550,8 +550,20 @@ def extract_correction_after_map(dfs: List[pd.DataFrame]) -> Dict[str, str]:
     out: Dict[str, str] = {}
 
     def _is_invalid_corr_value(v: Any) -> bool:
-        nv = _norm(v)
-        return nv in ("", "정정후", "정정전", "항목", "변경사유", "정정사유", "-")
+    txt = _single_line(v)
+    nv = _norm(txt)
+
+    if nv in ("", "정정후", "정정전", "변경후", "변경전", "항목", "변경사유", "정정사유", "-"):
+        return True
+
+    if re.search(r"^주\s*\d+\)\s*정정(?:전|후)$", txt):
+        return True
+    if re.search(r"^정정(?:전|후)\s*참조$", txt):
+        return True
+    if "원문참조" in txt or "공시확인바람" in txt:
+        return True
+
+    return False
 
     for df in dfs:
         try:
@@ -3439,14 +3451,7 @@ def parse_bond_record(rec: Dict[str, Any]):
         row["구분"],
     )
 
-    if exact_price:
-        row["행사(전환)가액(원)"] = exact_price
-    else:
-        row["행사(전환)가액(원)"] = get_corr_num(
-            price_labels,
-            [],   # broad fallback 제거
-            50,
-        )
+    row["행사(전환)가액(원)"] = exact_price
 
     price_num = parse_float_like(row["행사(전환)가액(원)"])
     if price_num is not None:
