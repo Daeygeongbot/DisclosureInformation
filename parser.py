@@ -550,20 +550,8 @@ def extract_correction_after_map(dfs: List[pd.DataFrame]) -> Dict[str, str]:
     out: Dict[str, str] = {}
 
     def _is_invalid_corr_value(v: Any) -> bool:
-        txt = _single_line(v)
-        nv = _norm(txt)
-
-        if nv in ("", "정정후", "정정전", "변경후", "변경전", "항목", "변경사유", "정정사유", "-"):
-            return True
-
-        if re.search(r"^주\s*\d+\)\s*정정(?:전|후)$", txt):
-            return True
-        if re.search(r"^정정(?:전|후)\s*참조$", txt):
-            return True
-        if "원문참조" in txt or "공시확인바람" in txt:
-            return True
-
-        return False
+        nv = _norm(v)
+        return nv in ("", "정정후", "정정전", "항목", "변경사유", "정정사유", "-")
 
     for df in dfs:
         try:
@@ -608,17 +596,35 @@ def extract_correction_after_map(dfs: List[pd.DataFrame]) -> Dict[str, str]:
             last_item = item
             after_val = ""
 
-            for cc in range(after_col, C):
-                v = str(arr[rr][cc]).strip()
-                if v and v.lower() != "nan" and not _is_invalid_corr_value(v):
+            if 0 <= after_col < C:
+                v = str(arr[rr][after_col]).strip()
+                if (
+                    v
+                    and v.lower() != "nan"
+                    and not _is_invalid_corr_value(v)
+                ):
                     after_val = _single_line(v)
-                    break
+
+            if not after_val:
+                tail_vals = []
+                for cc in range((item_col or 0) + 1, C):
+                    v = str(arr[rr][cc]).strip()
+                    if (
+                        v
+                        and v.lower() != "nan"
+                        and not _is_invalid_corr_value(v)
+                    ):
+                        tail_vals.append(_single_line(v))
+
+                if len(tail_vals) >= 2:
+                    after_val = tail_vals[-1]
 
             if after_val:
                 out[_norm(item)] = after_val
                 out[_clean_label(item)] = after_val
 
     return out
+
 
 def scan_label_value(dfs: List[pd.DataFrame], label_candidates: List[str]) -> str:
     cand_clean = {_clean_label(x) for x in label_candidates}
@@ -655,29 +661,15 @@ def scan_label_value_preferring_correction(
     label_candidates: List[str],
     corr_after: Dict[str, str],
 ) -> str:
-    cand_clean = {_clean_label(x) for x in label_candidates if _clean_label(x)}
+    cand_clean = {_clean_label(x) for x in label_candidates}
 
     if corr_after:
         for c in cand_clean:
-            v = corr_after.get(c, "")
-            if normalize_text(v):
-                return _single_line(str(v))
-
+            if c in corr_after and str(corr_after[c]).strip():
+                return _single_line(str(corr_after[c]))
         for k, v in corr_after.items():
-            kk = _clean_label(k)
-            if kk in cand_clean and normalize_text(v):
+            if str(v).strip() and any(c in k for c in cand_clean):
                 return _single_line(str(v))
-
-        strong_cands = [
-            c for c in cand_clean
-            if len(c) >= 4 and c not in {"주식수", "가액", "비율", "원", "만기"}
-        ]
-
-        if strong_cands:
-            for k, v in corr_after.items():
-                kk = _clean_label(k)
-                if normalize_text(v) and any(sc in kk or kk in sc for sc in strong_cands):
-                    return _single_line(str(v))
 
     return scan_label_value(dfs, label_candidates)
 
@@ -2966,28 +2958,27 @@ def extract_bond_shares_and_ratio_from_section9(
     3) 9번 섹션에 '주1) 정정후' 같은 placeholder가 있으면
        아래 footnote 블록까지 내려가서 재확인
     """
-
     if bond_kind == "CB":
         section_titles = ["전환에 관한 사항"]
         share_labels = [
             "전환에 따라 발행할 주식수",
             "전환에 따라 발행할 주식의 수",
             "전환주식수",
-            "전환으로 발행할 주식수",
+            "주식수",
         ]
     elif bond_kind == "EB":
         section_titles = ["교환에 관한 사항"]
         share_labels = [
             "교환대상 주식수",
             "교환대상주식수",
-            "교환으로 교부할 주식수",
+            "주식수",
         ]
     else:
         section_titles = ["권리행사에 관한 사항", "신주인수권에 관한 사항"]
         share_labels = [
             "행사주식수",
             "권리행사로 발행할 주식수",
-            "신주인수권 행사주식수",
+            "주식수",
         ]
 
     ratio_labels = [
@@ -3331,40 +3322,9 @@ def parse_bond_record(rec: Dict[str, Any]):
 
     row["발행상품"] = extract_product_type_bond(tables, corr_after, title)
 
-    if row["구분"] == "CB":
-        price_labels = ["전환가액(원/주)", "전환가액(원)", "전환가액"]
-        price_fallback_keys = ["전환가액"]
-        share_count_labels = [
-            "전환에 따라 발행할 주식수",
-            "전환에 따라 발행할 주식의 수",
-            "전환주식수",
-            "전환으로 발행할 주식수",
-        ]
-        share_fallback_keys = ["전환주식수"]
-
-    elif row["구분"] == "EB":
-        price_labels = ["교환가액(원/주)", "교환가액(원)", "교환가액"]
-        price_fallback_keys = ["교환가액"]
-        share_count_labels = [
-            "교환대상 주식수",
-            "교환대상주식수",
-            "교환으로 교부할 주식수",
-        ]
-        share_fallback_keys = ["교환대상주식수"]
-
-    else:  # BW
-        price_labels = ["권리행사가액(원/주)", "행사가액(원/주)", "권리행사가액(원)", "행사가액(원)", "권리행사가액", "행사가액"]
-        price_fallback_keys = ["행사가액"]
-        share_count_labels = [
-            "행사주식수",
-            "권리행사로 발행할 주식수",
-            "신주인수권 행사주식수",
-        ]
-        share_fallback_keys = ["행사주식수"]
-
     row["행사(전환)가액(원)"] = get_corr_num(
-        price_labels,
-        [] if corr_after else price_fallback_keys,
+        ["전환가액(원/주)", "교환가액(원/주)", "행사가액(원/주)", "권리행사가액(원/주)", "전환가액", "교환가액", "행사가액", "권리행사가액"],
+        ["가액", "원"],
         50,
     )
 
@@ -3372,12 +3332,6 @@ def parse_bond_record(rec: Dict[str, Any]):
         tables,
         corr_after,
         row["구분"],
-    )
-
-    row["전환주식수"] = exact_share_cnt or get_corr_num(
-        ["전환에 따라 발행할 주식수", "전환에 따라 발행할 주식의 수", "전환주식수", "교환대상 주식수", "교환대상주식수", "행사주식수", "권리행사로 발행할 주식수", "주식수"],
-        ["주식수"],
-        50,
     )
 
     row["전환주식수"] = exact_share_cnt or get_corr_num(
