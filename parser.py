@@ -2991,9 +2991,9 @@ def extract_bond_price_from_section9(
     bond_kind: str,
 ) -> str:
     """
-    행사(전환)가액(원)은 반드시 9번 섹션을 우선으로 보되,
-    정정공시 placeholder / footnote / 라벨 fallback까지 반영해서
-    가장 신뢰도 높은 후보를 선택한다.
+    행사(전환)가액(원)은 실제 9번 섹션 블록에서만 추출
+    - corr_after 전역 스캔 금지
+    - 다른 섹션 오염 방지용 strict mode
     """
 
     if bond_kind == "CB":
@@ -3009,73 +3009,22 @@ def extract_bond_price_from_section9(
             "행사가액(원/주)",
             "권리행사가액(원)",
             "행사가액(원)",
-            "권리행사가액",
-            "행사가액",
         ]
 
-    label_norms = [_norm(x) for x in price_labels]
-    candidates: List[Tuple[int, int, str]] = []
-    placeholder_seen = False
+    block_rows = _get_section_block_rows(dfs, 9, section_titles, max_rows=12)
+    if not block_rows:
+        return ""
 
-    def _push_candidate(num: Optional[int], score: int, source: str):
-        if num is None:
-            return
-        if not (50 <= num <= 100_000_000):
-            return
-        if num in [2024, 2025, 2026, 2027]:
-            return
-        candidates.append((num, score, source))
+    num = _extract_price_from_block_rows(
+        block_rows,
+        price_labels,
+        min_val=50,
+        max_val=100_000_000,
+    )
+    if num is not None:
+        return f"{num:,}"
 
-    def _extract_near_label(text: str) -> Optional[int]:
-        txt = normalize_text(text)
-        if not txt:
-            return None
-
-        for lb in price_labels:
-            pat = rf"{re.escape(lb)}[^0-9]{{0,30}}([0-9][0-9,]*)"
-            m = re.search(pat, txt)
-            if m:
-                try:
-                    v = int(m.group(1).replace(",", ""))
-                    if 50 <= v <= 100_000_000:
-                        return v
-                except Exception:
-                    pass
-
-        # label은 있는데 바로 수치를 못 잡은 경우, 인접 숫자 보조 탐색
-        txt_norm = _norm(txt)
-        if any(lb in txt_norm for lb in label_norms):
-            nums = re.findall(r"\d{1,3}(?:,\d{3})+|\d+", txt)
-            vals = []
-            for x in nums:
-                try:
-                    v = int(x.replace(",", ""))
-                    if 50 <= v <= 100_000_000 and v not in [2024, 2025, 2026, 2027]:
-                        vals.append(v)
-                except Exception:
-                    pass
-            if vals:
-                return vals[0]
-
-        return None
-
-    def _extract_from_footnotes() -> Optional[int]:
-        lines = [normalize_text(x) for x in all_text_lines(dfs) if normalize_text(x)]
-        for i, line in enumerate(lines):
-            merged = " ".join(lines[i:i+3])
-            merged_norm = _norm(merged)
-
-            if any(lb in merged_norm for lb in label_norms):
-                num = _extract_near_label(merged)
-                if num is not None:
-                    return num
-
-            if re.search(r"주\s*\d+\)", merged) and any(lb in merged_norm for lb in label_norms):
-                num = _extract_near_label(merged)
-                if num is not None:
-                    return num
-
-        return None
+    return ""
 
     # 1) corr_after에서 정확 라벨
     if corr_after:
