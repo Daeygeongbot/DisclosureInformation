@@ -637,7 +637,6 @@ def extract_correction_after_map(dfs: List[pd.DataFrame]) -> Dict[str, str]:
 
     return out
 
-
 def scan_label_value(dfs: List[pd.DataFrame], label_candidates: List[str]) -> str:
     cand_clean = {_clean_label(x) for x in label_candidates}
 
