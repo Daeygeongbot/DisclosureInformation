@@ -2874,6 +2874,37 @@ def _extract_int_from_block_rows(
 
     return None
 
+def _extract_price_from_block_rows(
+    block_rows: List[List[str]],
+    label_keywords: List[str],
+    min_val: int = 50,
+    max_val: int = 100_000_000,
+) -> Optional[int]:
+    if not block_rows:
+        return None
+
+    label_norms = [_norm(x) for x in label_keywords]
+
+    for row in block_rows:
+        cleaned = [normalize_text(x) for x in row]
+        normed = [_norm(x) for x in cleaned]
+
+        for i, cell in enumerate(normed):
+            if any(lb in cell for lb in label_norms):
+                # 가격은 반드시 라벨 오른쪽 셀만 확인
+                for cand in cleaned[i + 1:]:
+                    txt = normalize_text(cand)
+
+                    if not txt:
+                        continue
+                    if any(x in txt for x in ["년", "월", "일", "%", "주식수", "비율", "권면총액", "총액"]):
+                        continue
+
+                    v = _to_int(txt)
+                    if v is not None and min_val <= v <= max_val:
+                        return v
+
+    return None
 
 def _extract_percent_from_block_rows(
     block_rows: List[List[str]],
@@ -2940,6 +2971,59 @@ def extract_bond_method_from_section8(
         method = _normalize_bond_method_value(block_text)
         if method:
             return method
+
+    return ""
+
+def extract_bond_price_from_section9(
+    dfs: List[pd.DataFrame],
+    corr_after: Dict[str, str],
+    bond_kind: str,
+) -> str:
+    """
+    행사(전환)가액(원)은 반드시 9번 섹션에서만 추출
+    """
+
+    if bond_kind == "CB":
+        section_titles = ["전환에 관한 사항"]
+        price_labels = ["전환가액(원/주)", "전환가액(원)", "전환가액"]
+    elif bond_kind == "EB":
+        section_titles = ["교환에 관한 사항"]
+        price_labels = ["교환가액(원/주)", "교환가액(원)", "교환가액"]
+    else:  # BW
+        section_titles = ["권리행사에 관한 사항", "신주인수권에 관한 사항"]
+        price_labels = [
+            "권리행사가액(원/주)",
+            "행사가액(원/주)",
+            "권리행사가액(원)",
+            "행사가액(원)",
+            "권리행사가액",
+            "행사가액",
+        ]
+
+    # 1) 정정공시에서 정확 라벨만 인정
+    if corr_after:
+        for k, v in corr_after.items():
+            k_norm = _norm(k)
+            if any(_norm(lb) in k_norm for lb in price_labels):
+                num = _to_int(v)
+                if num is None:
+                    num = _max_int_in_text(v)
+
+                if num is not None and 50 <= num <= 100_000_000:
+                    return f"{num:,}"
+
+    # 2) 실제 9번 섹션 블록만 확인
+    block_rows = _get_section_block_rows(dfs, 9, section_titles, max_rows=12)
+
+    if block_rows:
+        num = _extract_price_from_block_rows(
+            block_rows,
+            price_labels,
+            min_val=50,
+            max_val=100_000_000,
+        )
+        if num is not None:
+            return f"{num:,}"
 
     return ""
 
@@ -3322,11 +3406,26 @@ def parse_bond_record(rec: Dict[str, Any]):
 
     row["발행상품"] = extract_product_type_bond(tables, corr_after, title)
 
-    row["행사(전환)가액(원)"] = get_corr_num(
-        ["전환가액(원/주)", "교환가액(원/주)", "행사가액(원/주)", "권리행사가액(원/주)", "전환가액", "교환가액", "행사가액", "권리행사가액"],
-        ["가액", "원"],
-        50,
+    exact_price = extract_bond_price_from_section9(
+        tables,
+        corr_after,
+        row["구분"],
     )
+    
+    if exact_price:
+        row["행사(전환)가액(원)"] = exact_price
+    else:
+        row["행사(전환)가액(원)"] = get_corr_num(
+            price_labels,
+            [],   # broad fallback 제거
+            50,
+        )
+
+    price_num = parse_float_like(row["행사(전환)가액(원)"])
+    if price_num is not None:
+        if price_num < 50 or price_num > 100_000_000:
+            row["행사(전환)가액(원)"] = ""
+            suspicious.append("행사(전환)가액(원)")
 
     exact_share_cnt, exact_share_ratio = extract_bond_shares_and_ratio_from_section9(
         tables,
