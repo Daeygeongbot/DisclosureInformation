@@ -550,20 +550,20 @@ def extract_correction_after_map(dfs: List[pd.DataFrame]) -> Dict[str, str]:
     out: Dict[str, str] = {}
 
     def _is_invalid_corr_value(v: Any) -> bool:
-    txt = _single_line(v)
-    nv = _norm(txt)
+        txt = _single_line(v)
+        nv = _norm(txt)
 
-    if nv in ("", "정정후", "정정전", "변경후", "변경전", "항목", "변경사유", "정정사유", "-"):
-        return True
+        if nv in ("", "정정후", "정정전", "변경후", "변경전", "항목", "변경사유", "정정사유", "-"):
+            return True
 
-    if re.search(r"^주\s*\d+\)\s*정정(?:전|후)$", txt):
-        return True
-    if re.search(r"^정정(?:전|후)\s*참조$", txt):
-        return True
-    if "원문참조" in txt or "공시확인바람" in txt:
-        return True
+        if re.search(r"^주\s*\d+\)\s*정정(?:전|후)$", txt):
+            return True
+        if re.search(r"^정정(?:전|후)\s*참조$", txt):
+            return True
+        if "원문참조" in txt or "공시확인바람" in txt:
+            return True
 
-    return False
+        return False
 
     for df in dfs:
         try:
