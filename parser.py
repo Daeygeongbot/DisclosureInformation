@@ -2966,7 +2966,8 @@ def extract_bond_shares_and_ratio_from_section9(
     3) 9번 섹션에 '주1) 정정후' 같은 placeholder가 있으면
        아래 footnote 블록까지 내려가서 재확인
     """
-        if bond_kind == "CB":
+
+    if bond_kind == "CB":
         section_titles = ["전환에 관한 사항"]
         share_labels = [
             "전환에 따라 발행할 주식수",
