@@ -676,7 +676,7 @@ def parse_bond_option_record(rec: Dict[str, Any]) -> Dict[str, str]:
         call_text = extract_call_option_text_from_section(put_text)
 
         # 8) Call은 Call 컬럼으로 보낸다
-        row["Call Option"] = call_text if call_text else "공시 확인 바람"
+        row["Call Option"] = call_text if call_text else "-"
 
         # 9) Put에서는 Call만 제거한다
         if call_text:
