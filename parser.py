@@ -3069,6 +3069,7 @@ def extract_bond_price_from_section9(
     행사(전환)가액(원)은 실제 9번 섹션 블록에서만 추출
     - 다른 섹션 오염 방지용 strict mode
     - 9번 섹션 내부 정정표가 있으면 정정후 열 우선
+    - 9번 섹션에 주석 footnote(주1) 정정후) 가 있으면 footnote까지 확인
     """
 
     if bond_kind == "CB":
@@ -3088,6 +3089,86 @@ def extract_bond_price_from_section9(
             "행사가액",
         ]
 
+    def _valid_prices_in_text(text: str) -> List[int]:
+        txt = normalize_text(text)
+        if not txt:
+            return []
+
+        txt = re.sub(r"20\d{2}[-년\./\s]+\d{1,2}[-월\./\s]+\d{1,2}", " ", txt)
+        txt = re.sub(r"\b20\d{6}\b", " ", txt)
+        txt = re.sub(r"\d+(?:\.\d+)?\s*%", " ", txt)
+
+        vals = []
+        for tok in re.findall(r"\d{1,3}(?:,\d{3})+|\d+", txt):
+            try:
+                v = int(tok.replace(",", ""))
+            except Exception:
+                continue
+            if 50 <= v <= 100_000_000 and v not in [2024, 2025, 2026, 2027, 2028, 2029, 2030]:
+                vals.append(v)
+        return vals
+
+    def _extract_price_from_text(text: str) -> Optional[int]:
+        txt = normalize_text(text)
+        if not txt:
+            return None
+
+        marker_hits = []
+        for marker in ["정정후", "변경후"]:
+            for m in re.finditer(marker, txt):
+                sub = txt[m.end(): m.end() + 120]
+                nums = _valid_prices_in_text(sub)
+                if nums:
+                    marker_hits.append(nums[0])
+        if marker_hits:
+            return marker_hits[-1]
+
+        label_hits = []
+        for lb in price_labels:
+            for m in re.finditer(re.escape(lb), txt):
+                sub = txt[m.end(): m.end() + 100]
+                nums = _valid_prices_in_text(sub)
+                if nums:
+                    label_hits.append(nums[0])
+        if label_hits:
+            return label_hits[-1]
+
+        nums = _valid_prices_in_text(txt)
+        if nums:
+            return nums[-1]
+
+        return None
+
+    def _extract_price_from_footnotes() -> Optional[int]:
+        lines = [normalize_text(x) for x in all_text_lines(dfs) if normalize_text(x)]
+        if not lines:
+            return None
+
+        target_norms = [_norm(x) for x in price_labels]
+
+        for i, line in enumerate(lines):
+            if not re.match(r"^주\s*\d+\)", line):
+                continue
+
+            block = [line]
+            for j in range(i + 1, min(i + 6, len(lines))):
+                nxt = lines[j]
+                if re.match(r"^주\s*\d+\)", nxt):
+                    break
+                if re.match(r"^\d+\s*[\.\)]\s*[가-힣A-Za-z]", nxt):
+                    break
+                block.append(nxt)
+
+            merged = " ".join(block)
+            merged_norm = _norm(merged)
+
+            if any(tn in merged_norm for tn in target_norms) or "정정후" in merged or "변경후" in merged:
+                num = _extract_price_from_text(merged)
+                if num is not None:
+                    return num
+
+        return None
+
     block_rows = _get_section_block_rows(dfs, 9, section_titles, max_rows=12)
     if not block_rows:
         return ""
@@ -3101,91 +3182,35 @@ def extract_bond_price_from_section9(
     if num is not None:
         return f"{num:,}"
 
-    return ""
-
-    # 1) corr_after에서 정확 라벨
-    if corr_after:
-        for k, v in corr_after.items():
-            k_norm = _norm(k)
-            v_txt = normalize_text(v)
-
-            if re.search(r"주\s*\d+\)\s*정정(?:전|후)", v_txt):
-                placeholder_seen = True
-
-            if any(lb in k_norm for lb in label_norms):
-                num = _to_int(v)
-                if num is None:
-                    num = _extract_near_label(v)
-                if num is None:
-                    num = _max_int_in_text(v)
-                _push_candidate(num, 100, "corr_exact_label")
-
-        # 1-1) corr_after 안의 9번 섹션 헤딩 본문도 확인
-        for k, v in corr_after.items():
-            if _is_numbered_section_heading(k, 9, section_titles):
-                v_txt = normalize_text(v)
-                if re.search(r"주\s*\d+\)\s*정정(?:전|후)", v_txt):
-                    placeholder_seen = True
-
-                num = _extract_near_label(v_txt)
-                if num is not None:
-                    _push_candidate(num, 90, "corr_section9_body")
-
-    # 2) 실제 9번 섹션 블록
-    block_rows = _get_section_block_rows(dfs, 9, section_titles, max_rows=12)
-    if block_rows:
-        num = _extract_price_from_block_rows(
-            block_rows,
-            price_labels,
-            min_val=50,
-            max_val=100_000_000,
-        )
-        _push_candidate(num, 80, "section9_block_exact")
-
-        block_text = " ".join(
-            [
-                " ".join([normalize_text(x) for x in row if normalize_text(x)])
-                for row in block_rows
-            ]
-        )
-        num2 = _extract_near_label(block_text)
-        _push_candidate(num2, 70, "section9_block_text")
-
-        if any(
-            re.search(r"주\s*\d+\)\s*정정(?:전|후)", normalize_text(cell))
+    block_text = " ".join(
+        [
+            " ".join([normalize_text(x) for x in row if normalize_text(x)])
             for row in block_rows
-            for cell in row
-        ):
-            placeholder_seen = True
-
-    # 3) placeholder가 있거나 후보가 없으면 footnote까지 탐색
-    if placeholder_seen or not candidates:
-        foot_num = _extract_from_footnotes()
-        _push_candidate(foot_num, 60, "footnote")
-
-    # 4) 최후 fallback
-    fallback_raw = scan_label_value_preferring_correction(
-        dfs,
-        price_labels,
-        corr_after,
+        ]
     )
-    fallback_num = _to_int(fallback_raw)
-    if fallback_num is None:
-        fallback_num = _extract_near_label(fallback_raw)
-    if fallback_num is None:
-        fallback_num = _max_int_in_text(fallback_raw)
-    _push_candidate(fallback_num, 50, "label_fallback")
 
-    if not candidates:
-        return ""
+    has_placeholder = any(
+        re.search(r"주\s*\d+\)\s*정정(?:전|후)", normalize_text(cell))
+        for row in block_rows
+        for cell in row
+    )
 
-    # 점수 높은 후보 우선, 동점이면 마지막 후보(보통 정정후가 뒤에 나옴) 우선
-    best_num, _, _ = sorted(
-        enumerate(candidates),
-        key=lambda x: (x[1][1], x[0]),
-    )[-1][1]
+    has_correction_table = any(
+        ("정정후" in _norm(normalize_text(cell)) or "변경후" in _norm(normalize_text(cell)))
+        for row in block_rows
+        for cell in row
+    )
 
-    return f"{best_num:,}"
+    num = _extract_price_from_text(block_text)
+    if num is not None:
+        return f"{num:,}"
+
+    if has_placeholder or has_correction_table or corr_after:
+        foot_num = _extract_price_from_footnotes()
+        if foot_num is not None:
+            return f"{foot_num:,}"
+
+    return ""
 
 def extract_bond_shares_and_ratio_from_section9(
     dfs: List[pd.DataFrame],
@@ -3599,25 +3624,30 @@ def parse_bond_record(rec: Dict[str, Any]):
         row["구분"],
     )
 
-    fallback_price_raw = scan_label_value_preferring_correction(
-        tables,
-        price_labels,
-        corr_after,
-    )
-    fallback_price_num = _to_int(fallback_price_raw)
-    if fallback_price_num is None:
-        fallback_price_num = _max_int_in_text(fallback_price_raw)
+    if exact_price:
+        row["행사(전환)가액(원)"] = exact_price
+    else:
+        # 정정공시는 전역 fallback 금지
+        if not corr_after:
+            fallback_price_raw = scan_label_value_preferring_correction(
+                tables,
+                price_labels,
+                corr_after,
+            )
+            fallback_price_num = _to_int(fallback_price_raw)
+            if fallback_price_num is None:
+                fallback_price_num = _max_int_in_text(fallback_price_raw)
 
-    row["행사(전환)가액(원)"] = first_nonempty(
-        exact_price,
-        fmt_number(fallback_price_num) if fallback_price_num else "",
-    )
+            row["행사(전환)가액(원)"] = (
+                fmt_number(fallback_price_num) if fallback_price_num else ""
+            )
+        else:
+            row["행사(전환)가액(원)"] = ""
 
     price_num = parse_float_like(row["행사(전환)가액(원)"])
-    if price_num is not None:
-        if price_num < 50 or price_num > 100_000_000:
-            row["행사(전환)가액(원)"] = ""
-            suspicious.append("행사(전환)가액(원)")
+    if price_num is not None and (price_num < 50 or price_num > 100_000_000):
+        row["행사(전환)가액(원)"] = ""
+        suspicious.append("행사(전환)가액(원)")
         
     exact_share_cnt, exact_share_ratio = extract_bond_shares_and_ratio_from_section9(
         tables,
